@@ -1,6 +1,6 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
-*.py[codz]
+*.py[cod]
 *$py.class
 
 # C extensions
@@ -205,3 +205,33 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# macOS
+.DS_Store
+
+# Build artifacts
+*.o
+*.obj
+*.dylib
+*.a
+*.la
+*.lo
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+
+# Local dependency/build outputs
+localdeps/
+
+# Experiment outputs and caches
+results/
+
+# Logs and temp files
+*.tmp
+tmp/
+
+# Nested repo metadata
+SPLIT-ICML/
+SPLIT-ICML/.git/
+SPLIT-ICML/**/pyproject-build/
