@@ -1,0 +1,20 @@
+# Core scientific stack used by the experiment drivers.
+numpy>=1.24.3
+pandas>=2.0.1
+scikit-learn>=1.2.2
+matplotlib>=3.7
+openml>=0.14
+ruptures>=1.1
+
+# LightGBM preprocessing variant (PIPELINE=lightgbm).
+lightgbm>=4.0
+xgboost>=2.1
+optuna>=4.0
+
+# Declared runtime dependency of local SPLIT package.
+pathspec==0.12.1
+
+# Build requirements for local SPLIT C++ extension if installing from source.
+pybind11
+scikit-build-core
+setuptools_scm==7.1.0

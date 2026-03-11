@@ -97,3 +97,27 @@ results/lightgbm/multisplit_lightgbm_dp_results.csv
 results/lightgbm/multisplit_lightgbm_dp_accuracy.png
 results/lightgbm/multisplit_lightgbm_depth_vs_accuracy.log
 ```
+
+## Subproblem growth tracking
+`seed_results.csv` now includes per-trial MSPLIT search counters:
+- `dp_subproblem_calls`, `dp_cache_hits`, `dp_unique_states`
+- `greedy_subproblem_calls`, `greedy_cache_hits`, `greedy_unique_states`
+
+`summary_results.csv` includes corresponding `mean_*` columns so you can see magnitudes by `(dataset, depth)` directly.
+
+To compare how fast subproblems grow across different run configs, use:
+
+```bash
+.venv/bin/python compare_subproblem_growth.py \
+  --seed-csv \
+    results/runs/run_a/seed_results.csv \
+    results/runs/run_b/seed_results.csv \
+  --label config_a config_b \
+  --metric dp_subproblem_calls \
+  --out-csv results/subproblem_growth_compare.csv
+```
+
+The output includes depth-to-depth growth columns:
+- `mean_<metric>_prev_depth`
+- `mean_<metric>_growth_ratio`
+- `mean_<metric>_growth_delta`

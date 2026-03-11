@@ -195,13 +195,25 @@ PYBIND11_MODULE(_libgosdt, m) {
         "msplit_fit",
         [](py::array_t<int, py::array::c_style | py::array::forcecast> z,
            py::array_t<int, py::array::c_style | py::array::forcecast> y,
+           py::object sample_weight,
            int full_depth_budget,
            int lookahead_depth_budget,
            double regularization,
            double branch_penalty,
            int min_child_size,
            double time_limit_seconds,
-           int max_branching) {
+           int max_branching,
+           int partition_strategy,
+           bool approx_mode,
+           int patch_budget_per_feature,
+           int exactify_top_m,
+           int tau_mode,
+           int approx_feature_scan_limit,
+           bool approx_ref_shortlist_enabled,
+           int approx_ref_widen_max,
+           bool approx_challenger_sweep_enabled,
+           int approx_challenger_sweep_max_features,
+           int approx_challenger_sweep_max_patch_calls_per_node) {
             if (z.ndim() != 2) {
                 throw std::runtime_error("msplit_fit expects z to be a 2D int array.");
             }
@@ -221,18 +233,42 @@ PYBIND11_MODULE(_libgosdt, m) {
             std::vector<int> y_vec(static_cast<size_t>(n_rows));
             std::memcpy(y_vec.data(), y.data(), y_vec.size() * sizeof(int));
 
+            std::vector<double> sample_weight_vec;
+            if (!sample_weight.is_none()) {
+                py::array_t<double, py::array::c_style | py::array::forcecast> sw =
+                    sample_weight.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>();
+                if (sw.ndim() != 1 || sw.shape(0) != z.shape(0)) {
+                    throw std::runtime_error(
+                        "msplit_fit expects sample_weight to be None or a 1D float array with shape[0] == z.shape[0].");
+                }
+                sample_weight_vec.resize(static_cast<size_t>(n_rows));
+                std::memcpy(sample_weight_vec.data(), sw.data(), sample_weight_vec.size() * sizeof(double));
+            }
+
             msplit::FitResult solved = msplit::fit(
                 z_flat,
                 n_rows,
                 n_features,
                 y_vec,
+                sample_weight_vec,
                 full_depth_budget,
                 lookahead_depth_budget,
                 regularization,
                 branch_penalty,
                 min_child_size,
                 time_limit_seconds,
-                max_branching);
+                max_branching,
+                partition_strategy,
+                approx_mode,
+                patch_budget_per_feature,
+                exactify_top_m,
+                tau_mode,
+                approx_feature_scan_limit,
+                approx_ref_shortlist_enabled,
+                approx_ref_widen_max,
+                approx_challenger_sweep_enabled,
+                approx_challenger_sweep_max_features,
+                approx_challenger_sweep_max_patch_calls_per_node);
 
             py::dict out;
             out["tree"] = py::str(solved.tree.dump());
@@ -241,17 +277,231 @@ PYBIND11_MODULE(_libgosdt, m) {
             out["objective"] = solved.objective;
             out["exact_internal_nodes"] = solved.exact_internal_nodes;
             out["greedy_internal_nodes"] = solved.greedy_internal_nodes;
+            out["dp_subproblem_calls"] = solved.dp_subproblem_calls;
+            out["dp_cache_hits"] = solved.dp_cache_hits;
+            out["dp_unique_states"] = solved.dp_unique_states;
+            out["dp_cache_profile_enabled"] = solved.dp_cache_profile_enabled;
+            out["dp_cache_lookup_calls"] = solved.dp_cache_lookup_calls;
+            out["dp_cache_miss_no_bucket"] = solved.dp_cache_miss_no_bucket;
+            out["dp_cache_miss_bucket_present"] = solved.dp_cache_miss_bucket_present;
+            out["dp_cache_miss_depth_mismatch_only"] = solved.dp_cache_miss_depth_mismatch_only;
+            out["dp_cache_miss_indices_mismatch"] = solved.dp_cache_miss_indices_mismatch;
+            out["dp_cache_depth_match_candidates"] = solved.dp_cache_depth_match_candidates;
+            out["dp_cache_bucket_entries_scanned"] = solved.dp_cache_bucket_entries_scanned;
+            out["dp_cache_bucket_max_size"] = solved.dp_cache_bucket_max_size;
+            out["greedy_subproblem_calls"] = solved.greedy_subproblem_calls;
+            out["greedy_cache_hits"] = solved.greedy_cache_hits;
+            out["greedy_unique_states"] = solved.greedy_unique_states;
+            out["greedy_cache_entries_peak"] = solved.greedy_cache_entries_peak;
+            out["greedy_cache_clears"] = solved.greedy_cache_clears;
+            out["dp_interval_evals"] = solved.dp_interval_evals;
+            out["greedy_interval_evals"] = solved.greedy_interval_evals;
+            out["rush_incumbent_feature_aborts"] = solved.rush_incumbent_feature_aborts;
+            out["rush_total_time_sec"] = solved.rush_total_time_sec;
+            out["rush_refinement_child_calls"] = solved.rush_refinement_child_calls;
+            out["rush_refinement_recursive_calls"] = solved.rush_refinement_recursive_calls;
+            out["rush_refinement_recursive_unique_states"] = solved.rush_refinement_recursive_unique_states;
+            out["rush_ub_rescue_picks"] = solved.rush_ub_rescue_picks;
+            out["rush_global_fallback_picks"] = solved.rush_global_fallback_picks;
+            out["rush_profile_enabled"] = solved.rush_profile_enabled;
+            out["rush_profile_ub0_ordering_sec"] = solved.rush_profile_ub0_ordering_sec;
+            out["rush_profile_exact_lazy_eval_sec"] = solved.rush_profile_exact_lazy_eval_sec;
+            out["rush_profile_exact_lazy_eval_exclusive_sec"] = solved.rush_profile_exact_lazy_eval_exclusive_sec;
+            out["rush_profile_exact_lazy_eval_sec_depth0"] = solved.rush_profile_exact_lazy_eval_sec_depth0;
+            out["rush_profile_exact_lazy_eval_exclusive_sec_depth0"] =
+                solved.rush_profile_exact_lazy_eval_exclusive_sec_depth0;
+            out["rush_profile_exact_lazy_table_init_sec"] = solved.rush_profile_exact_lazy_table_init_sec;
+            out["rush_profile_exact_lazy_dp_recompute_sec"] = solved.rush_profile_exact_lazy_dp_recompute_sec;
+            out["rush_profile_exact_lazy_child_solve_sec"] = solved.rush_profile_exact_lazy_child_solve_sec;
+            out["rush_profile_exact_lazy_child_solve_sec_depth0"] =
+                solved.rush_profile_exact_lazy_child_solve_sec_depth0;
+            out["rush_profile_exact_lazy_closure_sec"] = solved.rush_profile_exact_lazy_closure_sec;
+            out["rush_profile_exact_lazy_dp_recompute_calls"] = solved.rush_profile_exact_lazy_dp_recompute_calls;
+            out["rush_profile_exact_lazy_closure_passes"] = solved.rush_profile_exact_lazy_closure_passes;
+            out["interval_refinements_attempted"] = solved.interval_refinements_attempted;
+            out["expensive_child_calls"] = solved.expensive_child_calls;
+            out["expensive_child_sec"] = solved.expensive_child_sec;
+            out["expensive_child_exactify_calls"] = solved.expensive_child_exactify_calls;
+            out["expensive_child_exactify_sec"] = solved.expensive_child_exactify_sec;
+            out["approx_mode_enabled"] = solved.approx_mode_enabled;
+            out["approx_ref_shortlist_enabled"] = solved.approx_ref_shortlist_enabled;
+            out["approx_challenger_sweep_enabled"] = solved.approx_challenger_sweep_enabled;
+            out["approx_lhat_computed"] = solved.approx_lhat_computed;
+            out["approx_greedy_patch_calls"] = solved.approx_greedy_patch_calls;
+            out["approx_greedy_patches_applied"] = solved.approx_greedy_patches_applied;
+            out["approx_greedy_ub_updates_total"] = solved.approx_greedy_ub_updates_total;
+            out["approx_greedy_patch_sec"] = solved.approx_greedy_patch_sec;
+            out["approx_exactify_triggered_nodes"] = solved.approx_exactify_triggered_nodes;
+            out["approx_exactify_features_exact_solved"] = solved.approx_exactify_features_exact_solved;
+            out["approx_exactify_stops_by_separation"] = solved.approx_exactify_stops_by_separation;
+            out["approx_exactify_stops_by_cap"] = solved.approx_exactify_stops_by_cap;
+            out["approx_exactify_stops_by_ambiguous_empty"] = solved.approx_exactify_stops_by_ambiguous_empty;
+            out["approx_exactify_stops_by_no_improve"] = solved.approx_exactify_stops_by_no_improve;
+            out["approx_exactify_stops_by_separation_depth0"] = solved.approx_exactify_stops_by_separation_depth0;
+            out["approx_exactify_stops_by_separation_depth1"] = solved.approx_exactify_stops_by_separation_depth1;
+            out["approx_exactify_stops_by_cap_depth0"] = solved.approx_exactify_stops_by_cap_depth0;
+            out["approx_exactify_stops_by_cap_depth1"] = solved.approx_exactify_stops_by_cap_depth1;
+            out["approx_exactify_features_exact_solved_depth0"] =
+                solved.approx_exactify_features_exact_solved_depth0;
+            out["approx_exactify_features_exact_solved_depth1"] =
+                solved.approx_exactify_features_exact_solved_depth1;
+            out["approx_exactify_set_size_depth0_min"] = solved.approx_exactify_set_size_depth0_min;
+            out["approx_exactify_set_size_depth0_mean"] = solved.approx_exactify_set_size_depth0_mean;
+            out["approx_exactify_set_size_depth0_max"] = solved.approx_exactify_set_size_depth0_max;
+            out["approx_exactify_set_size_depth1_min"] = solved.approx_exactify_set_size_depth1_min;
+            out["approx_exactify_set_size_depth1_mean"] = solved.approx_exactify_set_size_depth1_mean;
+            out["approx_exactify_set_size_depth1_max"] = solved.approx_exactify_set_size_depth1_max;
+            out["approx_exactify_avg_features_per_triggered_node"] =
+                solved.approx_exactify_avg_features_per_triggered_node;
+            out["approx_exactify_ambiguous_set_size_min"] = solved.approx_exactify_ambiguous_set_size_min;
+            out["approx_exactify_ambiguous_set_size_mean"] = solved.approx_exactify_ambiguous_set_size_mean;
+            out["approx_exactify_ambiguous_set_size_max"] = solved.approx_exactify_ambiguous_set_size_max;
+            out["approx_exactify_ambiguous_set_shrank_steps"] = solved.approx_exactify_ambiguous_set_shrank_steps;
+            out["approx_exactify_cap_effective_depth0"] = solved.approx_exactify_cap_effective_depth0;
+            out["approx_exactify_cap_effective_depth1"] = solved.approx_exactify_cap_effective_depth1;
+            out["approx_challenger_sweep_invocations"] = solved.approx_challenger_sweep_invocations;
+            out["approx_challenger_sweep_features_processed"] = solved.approx_challenger_sweep_features_processed;
+            out["approx_challenger_sweep_sec"] = solved.approx_challenger_sweep_sec;
+            out["approx_challenger_sweep_skipped_large_ambiguous"] =
+                solved.approx_challenger_sweep_skipped_large_ambiguous;
+            out["approx_challenger_sweep_patch_cap_hit"] =
+                solved.approx_challenger_sweep_patch_cap_hit;
+            out["approx_uncertainty_triggered_nodes"] = solved.approx_uncertainty_triggered_nodes;
+            out["approx_exactify_trigger_rate_depth0"] = solved.approx_exactify_trigger_rate_depth0;
+            out["approx_exactify_trigger_rate_depth1"] = solved.approx_exactify_trigger_rate_depth1;
+            out["approx_uncertainty_trigger_rate_depth0"] = solved.approx_uncertainty_trigger_rate_depth0;
+            out["approx_uncertainty_trigger_rate_depth1"] = solved.approx_uncertainty_trigger_rate_depth1;
+            out["approx_eligible_nodes_depth0"] = solved.approx_eligible_nodes_depth0;
+            out["approx_eligible_nodes_depth1"] = solved.approx_eligible_nodes_depth1;
+            out["approx_exactify_triggered_nodes_depth0"] = solved.approx_exactify_triggered_nodes_depth0;
+            out["approx_exactify_triggered_nodes_depth1"] = solved.approx_exactify_triggered_nodes_depth1;
+            out["approx_uncertainty_triggered_nodes_depth0"] = solved.approx_uncertainty_triggered_nodes_depth0;
+            out["approx_uncertainty_triggered_nodes_depth1"] = solved.approx_uncertainty_triggered_nodes_depth1;
+            out["approx_pub_unrefined_cells_on_pub_total"] = solved.approx_pub_unrefined_cells_on_pub_total;
+            out["approx_pub_patchable_cells_total"] = solved.approx_pub_patchable_cells_total;
+            out["approx_pub_cells_skipped_by_childrows"] = solved.approx_pub_cells_skipped_by_childrows;
+            out["approx_nodes_with_patchable_pub"] = solved.approx_nodes_with_patchable_pub;
+            out["approx_nodes_with_patch_calls"] = solved.approx_nodes_with_patch_calls;
+            out["approx_patch_cell_cache_hits"] = solved.approx_patch_cell_cache_hits;
+            out["approx_patch_cell_cache_misses"] = solved.approx_patch_cell_cache_misses;
+            out["approx_patch_cache_hit_updates"] = solved.approx_patch_cache_hit_updates;
+            out["approx_patch_cache_miss_oracle_calls"] = solved.approx_patch_cache_miss_oracle_calls;
+            out["approx_patch_subset_materializations"] = solved.approx_patch_subset_materializations;
+            out["approx_patch_skipped_already_tight"] = solved.approx_patch_skipped_already_tight;
+            out["approx_patch_skipped_no_possible_improve"] = solved.approx_patch_skipped_no_possible_improve;
+            out["approx_patch_skipped_cached"] = solved.approx_patch_skipped_cached;
+            out["approx_patch_budget_effective_min"] = solved.approx_patch_budget_effective_min;
+            out["approx_patch_budget_effective_avg"] = solved.approx_patch_budget_effective_avg;
+            out["approx_patch_budget_effective_max"] = solved.approx_patch_budget_effective_max;
+            out["approx_ref_neff_mean"] = solved.approx_ref_neff_mean;
+            out["approx_ref_neff_max"] = solved.approx_ref_neff_max;
+            out["approx_ref_k0_min"] = solved.approx_ref_k0_min;
+            out["approx_ref_k0_mean"] = solved.approx_ref_k0_mean;
+            out["approx_ref_k0_max"] = solved.approx_ref_k0_max;
+            out["approx_ref_k_final_min"] = solved.approx_ref_k_final_min;
+            out["approx_ref_k_final_mean"] = solved.approx_ref_k_final_mean;
+            out["approx_ref_k_final_max"] = solved.approx_ref_k_final_max;
+            out["approx_ref_k_depth0_mean"] = solved.approx_ref_k_depth0_mean;
+            out["approx_ref_k_depth1_mean"] = solved.approx_ref_k_depth1_mean;
+            out["approx_ref_widen_count"] = solved.approx_ref_widen_count;
+            out["approx_ref_widen_count_depth0"] = solved.approx_ref_widen_count_depth0;
+            out["approx_ref_widen_count_depth1"] = solved.approx_ref_widen_count_depth1;
+            out["approx_ref_chosen_feature_rank_depth0"] = solved.approx_ref_chosen_feature_rank_depth0;
+            out["approx_ref_chosen_feature_rank_depth1"] = solved.approx_ref_chosen_feature_rank_depth1;
+            out["approx_ref_chosen_in_initial_shortlist_rate_depth0"] =
+                solved.approx_ref_chosen_in_initial_shortlist_rate_depth0;
+            out["approx_ref_chosen_in_initial_shortlist_rate_depth1"] =
+                solved.approx_ref_chosen_in_initial_shortlist_rate_depth1;
+            out["fast100_exactify_nodes_allowed"] = solved.fast100_exactify_nodes_allowed;
+            out["fast100_exactify_nodes_skipped_small_support"] =
+                solved.fast100_exactify_nodes_skipped_small_support;
+            out["fast100_exactify_nodes_skipped_dominant_gain"] =
+                solved.fast100_exactify_nodes_skipped_dominant_gain;
+            out["depth1_skipped_by_low_global_ambiguity"] =
+                solved.depth1_skipped_by_low_global_ambiguity;
+            out["depth1_skipped_by_large_gap"] =
+                solved.depth1_skipped_by_large_gap;
+            out["depth1_exactify_challenger_nodes"] =
+                solved.depth1_exactify_challenger_nodes;
+            out["depth1_exactified_nodes"] =
+                solved.depth1_exactified_nodes;
+            out["depth1_exactified_features_mean"] =
+                solved.depth1_exactified_features_mean;
+            out["depth1_exactified_features_max"] =
+                solved.depth1_exactified_features_max;
+            out["depth1_teacher_replaced_runnerup"] =
+                solved.depth1_teacher_replaced_runnerup;
+            out["depth1_teacher_rejected_by_uhat_gate"] =
+                solved.depth1_teacher_rejected_by_uhat_gate;
+            out["depth1_exactify_set_size_mean"] =
+                solved.depth1_exactify_set_size_mean;
+            out["depth1_exactify_set_size_max"] =
+                solved.depth1_exactify_set_size_max;
+            out["fast100_skipped_by_ub_lb_separation"] =
+                solved.fast100_skipped_by_ub_lb_separation;
+            out["fast100_widen_forbidden_depth_gt0_attempts"] =
+                solved.fast100_widen_forbidden_depth_gt0_attempts;
+            out["fast100_frontier_size_mean"] = solved.fast100_frontier_size_mean;
+            out["fast100_frontier_size_max"] = solved.fast100_frontier_size_max;
+            out["fast100_stopped_midloop_separation"] =
+                solved.fast100_stopped_midloop_separation;
+            out["fast100_M_depth0_mean"] = solved.fast100_M_depth0_mean;
+            out["fast100_M_depth0_max"] = solved.fast100_M_depth0_max;
+            out["fast100_M_depth1_mean"] = solved.fast100_M_depth1_mean;
+            out["fast100_M_depth1_max"] = solved.fast100_M_depth1_max;
+            out["fast100_cf_exactify_nodes_depth0"] = solved.fast100_cf_exactify_nodes_depth0;
+            out["fast100_cf_exactify_nodes_depth1"] = solved.fast100_cf_exactify_nodes_depth1;
+            out["fast100_cf_skipped_agreement"] = solved.fast100_cf_skipped_agreement;
+            out["fast100_cf_skipped_small_regret"] = solved.fast100_cf_skipped_small_regret;
+            out["fast100_cf_skipped_low_impact"] = solved.fast100_cf_skipped_low_impact;
+            out["fast100_cf_frontier_size_mean"] = solved.fast100_cf_frontier_size_mean;
+            out["fast100_cf_frontier_size_max"] = solved.fast100_cf_frontier_size_max;
+            out["fast100_cf_exactified_features_mean"] = solved.fast100_cf_exactified_features_mean;
+            out["fast100_cf_exactified_features_max"] = solved.fast100_cf_exactified_features_max;
+            out["rootsafe_exactified_features"] = solved.rootsafe_exactified_features;
+            out["rootsafe_root_winner_changed_vs_proxy"] =
+                solved.rootsafe_root_winner_changed_vs_proxy;
+            out["rootsafe_root_candidates_K"] = solved.rootsafe_root_candidates_K;
+            out["fast100_used_lgb_prior_tiebreak"] =
+                solved.fast100_used_lgb_prior_tiebreak;
+            out["gini_dp_calls_root"] = solved.gini_dp_calls_root;
+            out["gini_dp_calls_depth1"] = solved.gini_dp_calls_depth1;
+            out["gini_teacher_chosen_depth1"] = solved.gini_teacher_chosen_depth1;
+            out["gini_tiebreak_used_in_shortlist"] = solved.gini_tiebreak_used_in_shortlist;
+            out["gini_dp_sec"] = solved.gini_dp_sec;
+            out["gini_root_k0"] = solved.gini_root_k0;
+            out["gini_endpoints_added_root"] = solved.gini_endpoints_added_root;
+            out["gini_endpoints_added_depth1"] = solved.gini_endpoints_added_depth1;
+            out["gini_endpoints_features_touched_root"] =
+                solved.gini_endpoints_features_touched_root;
+            out["gini_endpoints_features_touched_depth1"] =
+                solved.gini_endpoints_features_touched_depth1;
+            out["gini_endpoints_added_per_feature_max"] =
+                solved.gini_endpoints_added_per_feature_max;
+            out["gini_endpoint_sec"] = solved.gini_endpoint_sec;
             return out;
         },
         py::arg("z"),
         py::arg("y"),
+        py::arg("sample_weight") = py::none(),
         py::arg("full_depth_budget"),
         py::arg("lookahead_depth_budget"),
         py::arg("regularization"),
         py::arg("branch_penalty") = 0.0,
         py::arg("min_child_size"),
         py::arg("time_limit_seconds") = 0.0,
-        py::arg("max_branching") = 0);
+        py::arg("max_branching") = 0,
+        py::arg("partition_strategy") = 0,
+        py::arg("approx_mode") = false,
+        py::arg("patch_budget_per_feature") = 12,
+        py::arg("exactify_top_m") = 2,
+        py::arg("tau_mode") = 1,
+        py::arg("approx_feature_scan_limit") = 0,
+        py::arg("approx_ref_shortlist_enabled") = true,
+        py::arg("approx_ref_widen_max") = 1,
+        py::arg("approx_challenger_sweep_enabled") = false,
+        py::arg("approx_challenger_sweep_max_features") = 3,
+        py::arg("approx_challenger_sweep_max_patch_calls_per_node") = 0);
 
     // Define Status enum
     py::enum_<gosdt::Status>(m, "Status")

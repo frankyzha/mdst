@@ -13,6 +13,7 @@ from ._version import version as __version__
 from ._binarizer import NumericBinarizer
 from ._threshold_guessing import ThresholdGuessBinarizer
 from .MSPLIT import MSPLIT
+from .MSPLIT_RUSHDP import MSPLIT_RUSHDP
 from .cart_binning import CARTBinner, fit_cart_binner
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "NumericBinarizer",
     "ThresholdGuessBinarizer",
     "MSPLIT",
+    "MSPLIT_RUSHDP",
     "CARTBinner",
     "fit_cart_binner",
 ]

@@ -4,9 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${ROOT_DIR}"
 
-if [[ -f ".venv/bin/activate" ]]; then
-  # shellcheck disable=SC1091
-  source ".venv/bin/activate"
+if [[ -x ".venv/bin/python" ]]; then
+  PYTHON_BIN=".venv/bin/python"
+else
+  PYTHON_BIN="${PYTHON_BIN:-python}"
 fi
 
 export MPLBACKEND="${MPLBACKEND:-Agg}"
@@ -24,7 +25,7 @@ RUN_NAME="${RUN_NAME:-vcm_lightgbm_$(date +%Y%m%d_%H%M%S)}"
 echo "[run_vcm_multisplit_lightgbm] run_name=${RUN_NAME}"
 
 echo "[run_vcm_multisplit_lightgbm] threads=${THREADS}, lgb_threads=${LIGHTGBM_NUM_THREADS}, MPLBACKEND=${MPLBACKEND}"
-python run_multisplit_experiments_lightgbm.py --run-name "${RUN_NAME}" --lgb-num-threads "${LIGHTGBM_NUM_THREADS}" "$@"
+"${PYTHON_BIN}" run_multisplit_experiments_lightgbm.py --run-name "${RUN_NAME}" --lgb-num-threads "${LIGHTGBM_NUM_THREADS}" "$@"
 
 RUN_DIR="${ROOT_DIR}/results/runs_lightgbm/${RUN_NAME}"
 BUNDLE="${RUN_DIR}/${RUN_NAME}_artifacts.tar.gz"
