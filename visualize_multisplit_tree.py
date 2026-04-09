@@ -1,15 +1,18 @@
-"""Visualize one fitted tree for XGBoost or MSPLIT (CART/LightGBM binning)."""
+"""Visualize one fitted tree for XGBoost or LightGBM-binned MSPLIT."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import math
+import os
 import re
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/msdt_mplconfig")
 
 import matplotlib
 
@@ -24,7 +27,7 @@ from xgboost import XGBClassifier
 
 from experiment_utils import DATASET_LOADERS, encode_binary_target, make_preprocessor
 from lightgbm_binning import fit_lightgbm_binner
-from split import MSPLIT, MSPLIT_RUSHDP, fit_cart_binner
+from split import MSPLIT, MSPLIT_RUSHDP
 from tree_artifact_utils import write_artifact_json
 
 
@@ -34,7 +37,7 @@ def _parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--dataset", choices=sorted(DATASET_LOADERS.keys()), required=True)
-    parser.add_argument("--pipeline", choices=["xgboost", "cart", "lightgbm"], required=True)
+    parser.add_argument("--pipeline", choices=["xgboost", "lightgbm"], required=True)
     parser.add_argument("--depth-budget", type=int, default=3)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--test-size", type=float, default=0.2)
@@ -46,7 +49,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--min-child-size", type=int, default=8)
     parser.add_argument("--max-branching", type=int, default=0)
     parser.add_argument("--reg", type=float, default=0.01)
-    parser.add_argument("--branch-penalty", type=float, default=0.002)
     parser.add_argument(
         "--msplit-variant",
         choices=["optimal_dp", "rush_dp"],
@@ -345,7 +347,7 @@ def _format_msplit_condition(feature_idx: int, bins: Iterable[int], binner, feat
 def _subtree_signature(node: object) -> Tuple:
     if _is_leaf(node):
         prediction = int(getattr(node, "prediction", 0))
-        class_counts = tuple(int(v) for v in getattr(node, "class_counts", (0, 0)))
+        class_counts = tuple(int(v) for v in getattr(node, "class_counts", ()))
         return ("leaf", prediction, class_counts)
     child_sigs = tuple(
         (
@@ -1274,15 +1276,6 @@ def _fit_msplit_tree(
             ensemble_bagging_freq=max(0, int(args.lgb_ensemble_bagging_freq)),
             threshold_dedup_eps=max(0.0, float(args.lgb_threshold_dedup_eps)),
         )
-    else:
-        binner = fit_cart_binner(
-            x_train_proc,
-            y_train,
-            max_bins=args.max_bins,
-            min_samples_leaf=args.min_samples_leaf,
-            random_state=args.seed,
-        )
-
     z_train = binner.transform(x_train_proc)
     z_test = binner.transform(x_test_proc)
     lookahead = min(args.lookahead_cap, args.depth_budget - 1)
@@ -1292,7 +1285,6 @@ def _fit_msplit_tree(
         lookahead_depth_budget=lookahead,
         full_depth_budget=args.depth_budget,
         reg=args.reg,
-        branch_penalty=args.branch_penalty,
         max_bins=args.max_bins,
         min_samples_leaf=args.min_samples_leaf,
         min_child_size=args.min_child_size,
@@ -1300,7 +1292,6 @@ def _fit_msplit_tree(
         time_limit=args.time_limit,
         verbose=False,
         random_state=args.seed,
-        input_is_binned=True,
         use_cpp_solver=True,
     )
     model.fit(z_train, y_train)
@@ -1311,10 +1302,10 @@ def _fit_msplit_tree(
 
 
 def _pipeline_title(pipeline: str) -> str:
-    if pipeline == "cart":
-        return "CART + MultiwaySPLIT"
     if pipeline == "lightgbm":
         return "LightGBM + MultiwaySPLIT"
+    if pipeline == "shapecart":
+        return "ShapeCART"
     return "XGBoost"
 
 
@@ -1389,6 +1380,20 @@ def main() -> None:
                 ("seed", str(split_cfg.get("seed", args.seed))),
                 ("test", str(split_cfg.get("test_size", args.test_size))),
             ]
+        elif pipeline == "shapecart":
+            config_entries = [
+                ("depth", str(model_cfg.get("depth_budget", args.depth_budget))),
+                ("k", str(model_cfg.get("k", "n/a"))),
+                ("leaves", str(realized_leaves)),
+                ("acc", f"{float(acc):.4f}" if not pd.isna(acc) else "nan"),
+                ("min_leaf", str(model_cfg.get("min_samples_leaf", "n/a"))),
+                ("min_split", str(model_cfg.get("min_samples_split", "n/a"))),
+                ("inner_depth", str(model_cfg.get("inner_max_depth", "n/a"))),
+                ("inner_leaves", str(model_cfg.get("inner_max_leaf_nodes", "n/a"))),
+                ("max_iter", str(model_cfg.get("max_iter", "n/a"))),
+                ("seed", str(split_cfg.get("seed", args.seed))),
+                ("test", str(split_cfg.get("test_size", args.test_size))),
+            ]
         else:
             config_entries = [
                 ("depth", str(model_cfg.get("depth_budget", args.depth_budget))),
@@ -1401,7 +1406,6 @@ def main() -> None:
                 ("min_leaf", str(model_cfg.get("min_samples_leaf", args.min_samples_leaf))),
                 ("min_child", str(model_cfg.get("min_child_size", args.min_child_size))),
                 ("reg", str(model_cfg.get("reg", args.reg))),
-                ("b_penalty", str(model_cfg.get("branch_penalty", args.branch_penalty))),
                 ("msplit_var", str(model_cfg.get("msplit_variant", args.msplit_variant))),
                 ("seed", str(split_cfg.get("seed", args.seed))),
                 ("test", str(split_cfg.get("test_size", args.test_size))),
@@ -1535,7 +1539,7 @@ def main() -> None:
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     ax.set_axis_off()
     ax.set_facecolor("#f6f8fb")
-    pipeline_label = "CART + MultiwaySPLIT" if args.pipeline == "cart" else "LightGBM + MultiwaySPLIT"
+    pipeline_label = "LightGBM + MultiwaySPLIT"
     ax.set_title(f"{pipeline_label} on {args.dataset}", fontsize=17, y=0.965)
     _draw_msplit_tree(
         ax,
@@ -1558,7 +1562,6 @@ def main() -> None:
             ("min_leaf", str(args.min_samples_leaf)),
             ("min_child", str(args.min_child_size)),
             ("reg", str(args.reg)),
-            ("b_penalty", str(args.branch_penalty)),
             ("msplit_var", str(args.msplit_variant)),
             ("seed", str(args.seed)),
             ("test", str(args.test_size)),
@@ -1599,7 +1602,6 @@ def main() -> None:
                 "min_child_size": int(args.min_child_size),
                 "max_branching": int(args.max_branching),
                 "reg": float(args.reg),
-                "branch_penalty": float(args.branch_penalty),
                 "msplit_variant": str(args.msplit_variant),
             },
             "binner": {

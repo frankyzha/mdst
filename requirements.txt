@@ -4,6 +4,7 @@ pandas>=2.0.1
 scikit-learn>=1.2.2
 matplotlib>=3.7
 openml>=0.14
+ucimlrepo>=0.0.7
 ruptures>=1.1
 
 # LightGBM preprocessing variant (PIPELINE=lightgbm).

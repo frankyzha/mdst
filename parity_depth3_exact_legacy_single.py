@@ -130,7 +130,6 @@ def main() -> None:
         lookahead_depth_budget=int(trial_params["lookahead_depth_budget"]),
         full_depth_budget=int(args.depth_budget),
         reg=float(trial_params["reg"]),
-        branch_penalty=0.0,
         max_bins=int(trial_params["max_bins"]),
         min_samples_leaf=int(trial_params["min_samples_leaf"]),
         min_child_size=int(trial_params["min_child_size"]),
@@ -138,7 +137,6 @@ def main() -> None:
         time_limit=float(args.time_limit),
         verbose=False,
         random_state=int(args.seed),
-        input_is_binned=True,
         use_cpp_solver=True,
         interval_partition_solver="rush_dp",
     )

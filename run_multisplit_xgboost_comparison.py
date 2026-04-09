@@ -47,9 +47,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--test-size", type=float, default=0.2)
     parser.add_argument("--time-limit", type=float, default=3000.0)
     parser.add_argument("--lookahead-cap", type=int, default=3)
-    parser.add_argument("--max-bins", type=int, default=255)
+    parser.add_argument("--max-bins", type=int, default=1024)
+    parser.add_argument(
+        "--leaf-frac",
+        type=float,
+        default=0.0,
+        help="Optional leaf-fraction constraint passed to LightGBM+MSPLIT branch.",
+    )
     parser.add_argument("--min-samples-leaf", type=int, default=8)
     parser.add_argument("--min-child-size", type=int, default=8)
+    parser.add_argument("--min-split-size", type=int, default=0)
     parser.add_argument("--max-branching", type=int, default=0)
     parser.add_argument("--reg", type=float, default=0.01)
     parser.add_argument(
@@ -57,6 +64,12 @@ def _parse_args() -> argparse.Namespace:
         choices=["optimal_dp", "rush_dp"],
         default="rush_dp",
         help="MSPLIT interval partitioning variant for the LightGBM+MSPLIT branch.",
+    )
+    parser.add_argument(
+        "--approx-mode",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable MSPLIT approx controller in the LightGBM+MSPLIT branch.",
     )
     parser.add_argument(
         "--parallel-trials",
@@ -214,6 +227,12 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--results-root", type=str, default="results/comparison")
     parser.add_argument("--run-name", type=str, default=None)
+    parser.add_argument(
+        "--resume-split-run",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Resume existing LightGBM+MSPLIT child run directory if present.",
+    )
 
     args = parser.parse_args()
     args.depth_budgets = sorted(set(args.depth_budgets))
@@ -239,6 +258,7 @@ def _parse_args() -> argparse.Namespace:
     args.lgb_threshold_dedup_eps = max(0.0, float(args.lgb_threshold_dedup_eps))
     if not 0.0 < float(args.optuna_val_size) < 1.0:
         raise ValueError(f"--optuna-val-size must be in (0, 1), got {args.optuna_val_size}")
+    args.leaf_frac = max(0.0, float(args.leaf_frac))
     args.viz_min_depth = max(1, int(args.viz_min_depth))
     if args.viz_depth is None:
         args.viz_depth = int(max(args.depth_budgets))
@@ -282,10 +302,14 @@ def _run_split_pipeline(
         str(args.lookahead_cap),
         "--max-bins",
         str(args.max_bins),
+        "--leaf-frac",
+        str(args.leaf_frac),
         "--min-samples-leaf",
         str(args.min_samples_leaf),
         "--min-child-size",
         str(args.min_child_size),
+        "--min-split-size",
+        str(args.min_split_size),
         "--max-branching",
         str(args.max_branching),
         "--reg",
@@ -325,6 +349,8 @@ def _run_split_pipeline(
     cmd.append("--optuna-enable" if args.optuna_enable else "--no-optuna-enable")
     cmd.append("--optuna-warmstart-enable" if args.optuna_warmstart_enable else "--no-optuna-warmstart-enable")
     cmd.append("--paper-split-protocol" if args.paper_split_protocol else "--no-paper-split-protocol")
+    if bool(getattr(args, "resume_split_run", False)):
+        cmd.append("--resume")
     if args.max_trials > 0:
         cmd += ["--max-trials", str(args.max_trials)]
     if tree_artifacts_dir is not None:
@@ -803,6 +829,7 @@ def _plot_accuracy_vs_depth(
     if len(datasets) == 1:
         axes = [axes]
 
+    legend_handles: dict[str, object] = {}
     for ax, ds in zip(axes, datasets):
         s = df[df["dataset"] == ds].sort_values("depth_budget")
         depths = s["depth_budget"].to_numpy(dtype=int)
@@ -812,17 +839,30 @@ def _plot_accuracy_vs_depth(
             y = s[col].to_numpy(dtype=float)
             if np.all(np.isnan(y)):
                 continue
-            ax.plot(depths, y * 100.0, marker=marker, linewidth=lw, color=color, label=label)
+            (line,) = ax.plot(depths, y * 100.0, marker=marker, linewidth=lw, color=color, label=label)
+            if label not in legend_handles:
+                legend_handles[label] = line
 
         ax.set_title(ds)
         ax.set_xlabel("Depth budget")
         ax.set_xticks(depth_budgets)
         ax.grid(alpha=0.3)
-        ax.legend(loc="lower right", fontsize=9)
 
     axes[0].set_ylabel(f"{metric.capitalize()} accuracy (%)")
-    plt.tight_layout()
-    fig.savefig(out_path, dpi=220)
+    if legend_handles:
+        labels = list(legend_handles.keys())
+        handles = [legend_handles[label] for label in labels]
+        fig.legend(
+            handles,
+            labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.02),
+            ncol=min(len(labels), 3),
+            frameon=False,
+            fontsize=10,
+        )
+    plt.tight_layout(rect=[0.0, 0.0, 1.0, 0.90])
+    fig.savefig(out_path, dpi=220, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -1127,6 +1167,8 @@ def _generate_trees(
         str(args.min_samples_leaf),
         "--min-child-size",
         str(args.min_child_size),
+        "--min-split-size",
+        str(args.min_split_size),
         "--max-branching",
         str(args.max_branching),
         "--reg",
@@ -1355,6 +1397,7 @@ def main() -> None:
         stable_dir=tmp_dir / "stable_lightgbm",
         tree_artifacts_dir=tree_artifacts_all["lightgbm"],
         extra_args=[
+            ("--approx-mode" if args.approx_mode else "--no-approx-mode"),
             "--lgb-device-type",
             str(args.lgb_device_type),
             "--lgb-ensemble-runs",

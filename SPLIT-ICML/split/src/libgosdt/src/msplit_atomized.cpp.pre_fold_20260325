@@ -1,0 +1,2130 @@
+    struct AtomizedAtom {
+        int atom_pos = -1;
+        int bin_value = -1;
+        int row_count = 0;
+        double pos_weight = 0.0;
+        double neg_weight = 0.0;
+        double teacher_pos_weight = 0.0;
+        double teacher_neg_weight = 0.0;
+        double teacher_prob = 0.5;
+        int empirical_prediction = 0;
+        int teacher_prediction = 0;
+        std::vector<double> class_weight;
+        std::vector<double> teacher_class_weight;
+    };
+
+    struct AtomizedBlock {
+        std::vector<int> atom_positions;
+        int row_count = 0;
+        double pos_weight = 0.0;
+        double neg_weight = 0.0;
+        double teacher_pos_weight = 0.0;
+        double teacher_neg_weight = 0.0;
+        int empirical_prediction = 0;
+        int teacher_prediction = 0;
+        std::vector<double> class_weight;
+        std::vector<double> teacher_class_weight;
+    };
+
+    struct AtomizedScore {
+        double hard_loss = kInfinity;
+        double soft_loss = kInfinity;
+        double hard_impurity = kInfinity;
+        double soft_impurity = kInfinity;
+        double boundary_penalty = kInfinity;
+        int components = std::numeric_limits<int>::max();
+    };
+
+    struct AtomizedCandidate {
+        bool feasible = false;
+        AtomizedScore score;
+        int feature = -1;
+        std::vector<std::vector<int>> group_atom_positions;
+        std::vector<int> assignment;
+        const char *family = "none";
+    };
+
+    struct AtomizedCoarseCandidate {
+        AtomizedCandidate geometry_seed_candidate;
+        AtomizedCandidate block_candidate;
+        AtomizedCandidate hardloss_candidate;
+        AtomizedCandidate candidate;
+        std::vector<int> initial_block_assignment;
+        std::vector<int> refined_block_assignment;
+    };
+
+    struct RankedAtomizedCandidate {
+        int feature = -1;
+        int groups = -1;
+        AtomizedCandidate candidate;
+    };
+
+    struct AtomizedPrefixes {
+        std::vector<int> rows;
+        std::vector<double> pos;
+        std::vector<double> neg;
+        std::vector<double> teacher_pos;
+        std::vector<double> teacher_neg;
+        std::vector<double> class_weight_prefix;
+        std::vector<double> teacher_class_weight_prefix;
+    };
+
+    struct PreparedFeatureAtomized {
+        bool valid = false;
+        OrderedBins bins;
+        std::vector<AtomizedAtom> atoms;
+        AtomizedPrefixes atom_prefix;
+        std::vector<double> atom_adjacency_bonus;
+        double atom_adjacency_bonus_total = 0.0;
+        std::vector<AtomizedBlock> blocks;
+        std::vector<AtomizedAtom> block_atoms;
+        AtomizedPrefixes block_prefix;
+        std::vector<AtomizedCoarseCandidate> coarse_by_groups;
+        int q_effective = 0;
+    };
+
+    struct AtomizedRefinementMove {
+        bool valid = false;
+        int source_group = -1;
+        int target_group = -1;
+        int start = -1;
+        int end = -1;
+        int length = 0;
+        int delta_components = 0;
+        int row_count = 0;
+        double pos_weight = 0.0;
+        double neg_weight = 0.0;
+        double teacher_pos_weight = 0.0;
+        double teacher_neg_weight = 0.0;
+        double delta_j = 0.0;
+        double delta_hard = 0.0;
+        double delta_soft = 0.0;
+        std::vector<double> class_weight;
+        std::vector<double> teacher_class_weight;
+    };
+
+    struct AtomizedRefinementSummary {
+        int moves = 0;
+        double hard_gain = 0.0;
+        double soft_gain = 0.0;
+        double delta_j = 0.0;
+        int component_delta = 0;
+        bool improved = false;
+    };
+
+    static constexpr double kBoundaryPenaltyWeight = 1.0;
+
+    enum class AtomizedObjectiveMode {
+        kImpurity,
+        kHardLoss
+    };
+
+    double atomized_primary_objective(
+        const AtomizedScore &score,
+        AtomizedObjectiveMode mode = AtomizedObjectiveMode::kImpurity
+    ) const {
+        if (mode == AtomizedObjectiveMode::kHardLoss) {
+            return score.hard_loss;
+        }
+        return score.hard_impurity + family1_soft_weight_value_ * score.soft_impurity;
+    }
+
+    bool atomized_score_better(
+        const AtomizedScore &lhs,
+        const AtomizedScore &rhs,
+        AtomizedObjectiveMode mode = AtomizedObjectiveMode::kImpurity
+    ) const {
+        const double lhs_primary = atomized_primary_objective(lhs, mode);
+        const double rhs_primary = atomized_primary_objective(rhs, mode);
+        if (lhs_primary < rhs_primary - kEpsUpdate) {
+            return true;
+        }
+        if (rhs_primary < lhs_primary - kEpsUpdate) {
+            return false;
+        }
+        if (mode == AtomizedObjectiveMode::kHardLoss) {
+            if (lhs.hard_impurity < rhs.hard_impurity - kEpsUpdate) {
+                return true;
+            }
+            if (rhs.hard_impurity < lhs.hard_impurity - kEpsUpdate) {
+                return false;
+            }
+            if (lhs.boundary_penalty < rhs.boundary_penalty - kEpsUpdate) {
+                return true;
+            }
+            if (rhs.boundary_penalty < lhs.boundary_penalty - kEpsUpdate) {
+                return false;
+            }
+            if (lhs.soft_loss < rhs.soft_loss - kEpsUpdate) {
+                return true;
+            }
+            if (rhs.soft_loss < lhs.soft_loss - kEpsUpdate) {
+                return false;
+            }
+            if (lhs.soft_impurity < rhs.soft_impurity - kEpsUpdate) {
+                return true;
+            }
+            if (rhs.soft_impurity < lhs.soft_impurity - kEpsUpdate) {
+                return false;
+            }
+            if (lhs.components != rhs.components) {
+                return lhs.components < rhs.components;
+            }
+            return false;
+        }
+        if (lhs.hard_impurity < rhs.hard_impurity - kEpsUpdate) {
+            return true;
+        }
+        if (rhs.hard_impurity < lhs.hard_impurity - kEpsUpdate) {
+            return false;
+        }
+        if (lhs.soft_impurity < rhs.soft_impurity - kEpsUpdate) {
+            return true;
+        }
+        if (rhs.soft_impurity < lhs.soft_impurity - kEpsUpdate) {
+            return false;
+        }
+        if (lhs.boundary_penalty < rhs.boundary_penalty - kEpsUpdate) {
+            return true;
+        }
+        if (rhs.boundary_penalty < lhs.boundary_penalty - kEpsUpdate) {
+            return false;
+        }
+        if (lhs.hard_loss < rhs.hard_loss - kEpsUpdate) {
+            return true;
+        }
+        if (rhs.hard_loss < lhs.hard_loss - kEpsUpdate) {
+            return false;
+        }
+        if (lhs.soft_loss < rhs.soft_loss - kEpsUpdate) {
+            return true;
+        }
+        if (rhs.soft_loss < lhs.soft_loss - kEpsUpdate) {
+            return false;
+        }
+        if (lhs.components != rhs.components) {
+            return lhs.components < rhs.components;
+        }
+        return false;
+    }
+
+    double atomized_score_proxy(
+        const AtomizedScore &score,
+        double mu_node,
+        AtomizedObjectiveMode mode = AtomizedObjectiveMode::kImpurity
+    ) const {
+        return atomized_primary_objective(score, mode) +
+            mu_node * (kBoundaryPenaltyWeight * score.boundary_penalty + (double)score.components);
+    }
+
+    bool atomized_score_better_for_refinement(
+        const AtomizedScore &lhs,
+        const AtomizedScore &rhs,
+        double mu_node,
+        AtomizedObjectiveMode mode = AtomizedObjectiveMode::kImpurity
+    ) const {
+        const double lhs_j = atomized_score_proxy(lhs, mu_node, mode);
+        const double rhs_j = atomized_score_proxy(rhs, mu_node, mode);
+        if (lhs_j < rhs_j - kEpsUpdate) {
+            return true;
+        }
+        if (rhs_j < lhs_j - kEpsUpdate) {
+            return false;
+        }
+        if (mode == AtomizedObjectiveMode::kHardLoss) {
+            if (lhs.hard_impurity < rhs.hard_impurity - kEpsUpdate) {
+                return true;
+            }
+            if (rhs.hard_impurity < lhs.hard_impurity - kEpsUpdate) {
+                return false;
+            }
+            if (lhs.boundary_penalty < rhs.boundary_penalty - kEpsUpdate) {
+                return true;
+            }
+            if (rhs.boundary_penalty < lhs.boundary_penalty - kEpsUpdate) {
+                return false;
+            }
+            if (lhs.soft_loss < rhs.soft_loss - kEpsUpdate) {
+                return true;
+            }
+            if (rhs.soft_loss < lhs.soft_loss - kEpsUpdate) {
+                return false;
+            }
+            if (lhs.soft_impurity < rhs.soft_impurity - kEpsUpdate) {
+                return true;
+            }
+            if (rhs.soft_impurity < lhs.soft_impurity - kEpsUpdate) {
+                return false;
+            }
+            if (lhs.components != rhs.components) {
+                return lhs.components < rhs.components;
+            }
+            return false;
+        }
+        if (lhs.soft_impurity < rhs.soft_impurity - kEpsUpdate) {
+            return true;
+        }
+        if (rhs.soft_impurity < lhs.soft_impurity - kEpsUpdate) {
+            return false;
+        }
+        if (lhs.boundary_penalty < rhs.boundary_penalty - kEpsUpdate) {
+            return true;
+        }
+        if (rhs.boundary_penalty < lhs.boundary_penalty - kEpsUpdate) {
+            return false;
+        }
+        if (lhs.hard_loss < rhs.hard_loss - kEpsUpdate) {
+            return true;
+        }
+        if (rhs.hard_loss < lhs.hard_loss - kEpsUpdate) {
+            return false;
+        }
+        if (lhs.soft_loss < rhs.soft_loss - kEpsUpdate) {
+            return true;
+        }
+        if (rhs.soft_loss < lhs.soft_loss - kEpsUpdate) {
+            return false;
+        }
+        if (lhs.components != rhs.components) {
+            return lhs.components < rhs.components;
+        }
+        return false;
+    }
+
+    bool atomized_candidate_better(
+        const AtomizedCandidate &lhs,
+        const AtomizedCandidate &rhs,
+        int lhs_feature,
+        int rhs_feature
+    ) const {
+        if (!rhs.feasible) {
+            return lhs.feasible;
+        }
+        if (!lhs.feasible) {
+            return false;
+        }
+        if (atomized_score_better(lhs.score, rhs.score)) {
+            return true;
+        }
+        if (atomized_score_better(rhs.score, lhs.score)) {
+            return false;
+        }
+        return lhs_feature < rhs_feature;
+    }
+
+    static bool atomized_assignment_equivalent(
+        const AtomizedCandidate &lhs,
+        const AtomizedCandidate &rhs
+    ) {
+        if (!lhs.feasible || !rhs.feasible) {
+            return false;
+        }
+        if (lhs.assignment.size() != rhs.assignment.size()) {
+            return false;
+        }
+        std::vector<int> lhs_to_rhs;
+        std::vector<int> rhs_to_lhs;
+        int lhs_groups = 0;
+        int rhs_groups = 0;
+        for (size_t i = 0; i < lhs.assignment.size(); ++i) {
+            lhs_groups = std::max(lhs_groups, lhs.assignment[i] + 1);
+            rhs_groups = std::max(rhs_groups, rhs.assignment[i] + 1);
+        }
+        lhs_to_rhs.assign((size_t)lhs_groups, -1);
+        rhs_to_lhs.assign((size_t)rhs_groups, -1);
+        for (size_t i = 0; i < lhs.assignment.size(); ++i) {
+            const int lhs_group = lhs.assignment[i];
+            const int rhs_group = rhs.assignment[i];
+            if (lhs_group < 0 || rhs_group < 0) {
+                return false;
+            }
+            int &mapped_rhs = lhs_to_rhs[(size_t)lhs_group];
+            int &mapped_lhs = rhs_to_lhs[(size_t)rhs_group];
+            if (mapped_rhs < 0 && mapped_lhs < 0) {
+                mapped_rhs = rhs_group;
+                mapped_lhs = lhs_group;
+                continue;
+            }
+            if (mapped_rhs != rhs_group || mapped_lhs != lhs_group) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static bool atomized_move_is_improving(const AtomizedRefinementMove &move) {
+        return move.valid &&
+            (move.delta_j > kEpsUpdate ||
+             (std::abs(move.delta_j) <= kEpsUpdate && move.delta_soft > kEpsUpdate));
+    }
+
+    static bool atomized_move_better(
+        const AtomizedRefinementMove &lhs,
+        const AtomizedRefinementMove &rhs
+    ) {
+        if (!rhs.valid) {
+            return lhs.valid;
+        }
+        if (!lhs.valid) {
+            return false;
+        }
+        if (lhs.delta_j > rhs.delta_j + kEpsUpdate) {
+            return true;
+        }
+        if (rhs.delta_j > lhs.delta_j + kEpsUpdate) {
+            return false;
+        }
+        if (lhs.delta_hard > rhs.delta_hard + kEpsUpdate) {
+            return true;
+        }
+        if (rhs.delta_hard > lhs.delta_hard + kEpsUpdate) {
+            return false;
+        }
+        if (lhs.delta_soft > rhs.delta_soft + kEpsUpdate) {
+            return true;
+        }
+        if (rhs.delta_soft > lhs.delta_soft + kEpsUpdate) {
+            return false;
+        }
+        if (lhs.delta_components != rhs.delta_components) {
+            return lhs.delta_components < rhs.delta_components;
+        }
+        if (lhs.length != rhs.length) {
+            return lhs.length < rhs.length;
+        }
+        if (lhs.source_group != rhs.source_group) {
+            return lhs.source_group < rhs.source_group;
+        }
+        if (lhs.target_group != rhs.target_group) {
+            return lhs.target_group < rhs.target_group;
+        }
+        if (lhs.start != rhs.start) {
+            return lhs.start < rhs.start;
+        }
+        return lhs.end < rhs.end;
+    }
+
+    double effective_sample_unit(const SubproblemStats &stats) const {
+        if (sample_weight_uniform_) {
+            return 1.0 / static_cast<double>(std::max(1, stats.total_count));
+        }
+        if (stats.sum_weight <= kEpsUpdate || stats.sum_weight_sq <= kEpsUpdate) {
+            return 1.0 / static_cast<double>(std::max(1, stats.total_count));
+        }
+        const double n_eff = (stats.sum_weight * stats.sum_weight) / stats.sum_weight_sq;
+        return 1.0 / std::max(1.0, n_eff);
+    }
+
+    double noncontiguous_boundary_penalty(
+        int feature,
+        const AtomizedAtom &left,
+        const AtomizedAtom &right
+    ) const {
+        if (!teacher_available_) {
+            return 0.0;
+        }
+        const int gap_width = right.bin_value - left.bin_value;
+        if (gap_width <= 0) {
+            return 0.0;
+        }
+        const double strength =
+            boundary_strength_between_bins(feature, left.bin_value, right.bin_value);
+        return strength / static_cast<double>(gap_width);
+    }
+
+    double contiguous_boundary_bonus(
+        int feature,
+        const AtomizedAtom &left,
+        const AtomizedAtom &right
+    ) const {
+        if (feature < 0) {
+            return 0.0;
+        }
+        return noncontiguous_boundary_penalty(feature, left, right);
+    }
+
+    bool build_atomized_atoms(const OrderedBins &bins, int feature, std::vector<AtomizedAtom> &atoms) const {
+        atoms.clear();
+        if (bins.values.size() <= 1U) {
+            return false;
+        }
+
+        atoms.reserve(bins.values.size());
+        for (size_t atom_pos = 0; atom_pos < bins.values.size(); ++atom_pos) {
+            AtomizedAtom atom;
+            atom.atom_pos = (int)atom_pos;
+            atom.bin_value = bins.values[atom_pos];
+            atom.row_count = (int)bins.members[atom_pos].size();
+            if (!binary_mode_) {
+                atom.class_weight.assign((size_t)n_classes_, 0.0);
+                atom.teacher_class_weight.assign((size_t)n_classes_, 0.0);
+            }
+
+            for (int idx : bins.members[atom_pos]) {
+                const double w = sample_weight_[(size_t)idx];
+                const int label = y_[(size_t)idx];
+                if (binary_mode_ && label == 1) {
+                    atom.pos_weight += w;
+                } else if (binary_mode_) {
+                    atom.neg_weight += w;
+                } else {
+                    atom.class_weight[(size_t)label] += w;
+                }
+                if (teacher_available_) {
+                    if (binary_mode_) {
+                        const double teacher_prob = teacher_prob_[(size_t)idx];
+                        atom.teacher_pos_weight += w * teacher_prob;
+                        atom.teacher_neg_weight += w * (1.0 - teacher_prob);
+                    } else {
+                        const size_t teacher_base = static_cast<size_t>(idx) * static_cast<size_t>(n_classes_);
+                        for (int cls = 0; cls < n_classes_; ++cls) {
+                            atom.teacher_class_weight[(size_t)cls] +=
+                                w * teacher_prob_flat_[teacher_base + static_cast<size_t>(cls)];
+                        }
+                    }
+                }
+            }
+
+            if (binary_mode_) {
+                if (!teacher_available_) {
+                    atom.teacher_pos_weight = atom.pos_weight;
+                    atom.teacher_neg_weight = atom.neg_weight;
+                }
+                const double teacher_total = atom.teacher_pos_weight + atom.teacher_neg_weight;
+                atom.teacher_prob = (teacher_total > kEpsUpdate) ? (atom.teacher_pos_weight / teacher_total) : 0.5;
+                atom.empirical_prediction = (atom.pos_weight >= atom.neg_weight) ? 1 : 0;
+                atom.teacher_prediction = (atom.teacher_prob >= 0.5) ? 1 : 0;
+            } else {
+                if (!teacher_available_) {
+                    atom.teacher_class_weight = atom.class_weight;
+                }
+                atom.empirical_prediction = argmax_index(atom.class_weight);
+                atom.teacher_prediction = argmax_index(atom.teacher_class_weight);
+            }
+            atoms.push_back(std::move(atom));
+        }
+        return atoms.size() > 1U;
+    }
+
+    static std::vector<AtomizedBlock> build_atomized_blocks(const std::vector<AtomizedAtom> &atoms) {
+        std::vector<AtomizedBlock> blocks;
+        if (atoms.empty()) {
+            return blocks;
+        }
+
+        AtomizedBlock current;
+        for (size_t i = 0; i < atoms.size(); ++i) {
+            if (i > 0) {
+                const bool same_type =
+                    atoms[i - 1].teacher_prediction == atoms[i].teacher_prediction &&
+                    atoms[i - 1].empirical_prediction == atoms[i].empirical_prediction;
+                if (!same_type) {
+                    blocks.push_back(std::move(current));
+                    current = AtomizedBlock{};
+                }
+            }
+            current.atom_positions.push_back(atoms[i].atom_pos);
+            current.row_count += atoms[i].row_count;
+            current.pos_weight += atoms[i].pos_weight;
+            current.neg_weight += atoms[i].neg_weight;
+            current.teacher_pos_weight += atoms[i].teacher_pos_weight;
+            current.teacher_neg_weight += atoms[i].teacher_neg_weight;
+            current.empirical_prediction = atoms[i].empirical_prediction;
+            current.teacher_prediction = atoms[i].teacher_prediction;
+            if (!atoms[i].class_weight.empty()) {
+                if (current.class_weight.empty()) {
+                    current.class_weight.assign(atoms[i].class_weight.size(), 0.0);
+                    current.teacher_class_weight.assign(atoms[i].teacher_class_weight.size(), 0.0);
+                }
+                for (size_t cls = 0; cls < atoms[i].class_weight.size(); ++cls) {
+                    current.class_weight[cls] += atoms[i].class_weight[cls];
+                    current.teacher_class_weight[cls] += atoms[i].teacher_class_weight[cls];
+                }
+            }
+        }
+
+        blocks.push_back(std::move(current));
+        return blocks;
+    }
+
+    static std::vector<AtomizedAtom> build_block_atoms(const std::vector<AtomizedBlock> &blocks) {
+        std::vector<AtomizedAtom> block_atoms;
+        block_atoms.reserve(blocks.size());
+        for (size_t block_idx = 0; block_idx < blocks.size(); ++block_idx) {
+            const AtomizedBlock &block = blocks[block_idx];
+            AtomizedAtom atom;
+            atom.atom_pos = (int)block_idx;
+            atom.bin_value = (int)block_idx;
+            atom.row_count = block.row_count;
+            atom.pos_weight = block.pos_weight;
+            atom.neg_weight = block.neg_weight;
+            atom.teacher_pos_weight = block.teacher_pos_weight;
+            atom.teacher_neg_weight = block.teacher_neg_weight;
+            atom.empirical_prediction = block.empirical_prediction;
+            atom.teacher_prediction = block.teacher_prediction;
+            atom.class_weight = block.class_weight;
+            atom.teacher_class_weight = block.teacher_class_weight;
+            if (!atom.class_weight.empty()) {
+                atom.teacher_prob = 0.5;
+            } else {
+                const double teacher_total = atom.teacher_pos_weight + atom.teacher_neg_weight;
+                atom.teacher_prob = (teacher_total > kEpsUpdate) ? (atom.teacher_pos_weight / teacher_total) : 0.5;
+            }
+            block_atoms.push_back(std::move(atom));
+        }
+        return block_atoms;
+    }
+
+    AtomizedPrefixes build_atomized_prefixes(const std::vector<AtomizedAtom> &atoms) const {
+        AtomizedPrefixes prefix;
+        const size_t count = atoms.size();
+        prefix.rows.assign(count + 1, 0);
+        prefix.pos.assign(count + 1, 0.0);
+        prefix.neg.assign(count + 1, 0.0);
+        prefix.teacher_pos.assign(count + 1, 0.0);
+        prefix.teacher_neg.assign(count + 1, 0.0);
+        if (!binary_mode_) {
+            prefix.class_weight_prefix.assign((count + 1U) * static_cast<size_t>(n_classes_), 0.0);
+            prefix.teacher_class_weight_prefix.assign((count + 1U) * static_cast<size_t>(n_classes_), 0.0);
+        }
+        for (size_t i = 0; i < count; ++i) {
+            prefix.rows[i + 1] = prefix.rows[i] + atoms[i].row_count;
+            prefix.pos[i + 1] = prefix.pos[i] + atoms[i].pos_weight;
+            prefix.neg[i + 1] = prefix.neg[i] + atoms[i].neg_weight;
+            prefix.teacher_pos[i + 1] = prefix.teacher_pos[i] + atoms[i].teacher_pos_weight;
+            prefix.teacher_neg[i + 1] = prefix.teacher_neg[i] + atoms[i].teacher_neg_weight;
+            if (!binary_mode_) {
+                const size_t prev_base = i * static_cast<size_t>(n_classes_);
+                const size_t next_base = (i + 1U) * static_cast<size_t>(n_classes_);
+                for (int cls = 0; cls < n_classes_; ++cls) {
+                    prefix.class_weight_prefix[next_base + static_cast<size_t>(cls)] =
+                        prefix.class_weight_prefix[prev_base + static_cast<size_t>(cls)] +
+                        atoms[i].class_weight[(size_t)cls];
+                    prefix.teacher_class_weight_prefix[next_base + static_cast<size_t>(cls)] =
+                        prefix.teacher_class_weight_prefix[prev_base + static_cast<size_t>(cls)] +
+                        atoms[i].teacher_class_weight[(size_t)cls];
+                }
+            }
+        }
+        return prefix;
+    }
+
+    static std::vector<int> lift_block_assignment_to_atoms(
+        const std::vector<AtomizedBlock> &blocks,
+        const std::vector<int> &block_assignment,
+        int atom_count
+    ) {
+        std::vector<int> atom_assignment((size_t)atom_count, -1);
+        for (size_t block_idx = 0; block_idx < blocks.size() && block_idx < block_assignment.size(); ++block_idx) {
+            const int group_idx = block_assignment[block_idx];
+            for (int atom_pos : blocks[block_idx].atom_positions) {
+                atom_assignment[(size_t)atom_pos] = group_idx;
+            }
+        }
+        return atom_assignment;
+    }
+
+    static bool project_atom_assignment_to_blocks(
+        const std::vector<AtomizedBlock> &blocks,
+        const std::vector<int> &atom_assignment,
+        std::vector<int> &block_assignment,
+        std::vector<unsigned char> &mixed_block
+    ) {
+        block_assignment.assign(blocks.size(), -1);
+        mixed_block.assign(blocks.size(), 0);
+        for (size_t block_idx = 0; block_idx < blocks.size(); ++block_idx) {
+            const auto &positions = blocks[block_idx].atom_positions;
+            if (positions.empty()) {
+                return false;
+            }
+            const int first_group = atom_assignment[(size_t)positions.front()];
+            if (first_group < 0) {
+                return false;
+            }
+            block_assignment[block_idx] = first_group;
+            for (int atom_pos : positions) {
+                if (atom_assignment[(size_t)atom_pos] != first_group) {
+                    mixed_block[block_idx] = 1;
+                    break;
+                }
+            }
+        }
+        return true;
+    }
+
+    static std::vector<std::pair<int, int>> build_active_block_windows(
+        const std::vector<int> &before,
+        const std::vector<int> &after,
+        const std::vector<unsigned char> *extra_active = nullptr
+    ) {
+        std::vector<std::pair<int, int>> windows;
+        const int count = (int)after.size();
+        if (count <= 0 || before.size() != after.size()) {
+            return windows;
+        }
+
+        std::vector<unsigned char> active((size_t)count, 0);
+        for (int idx = 0; idx < count; ++idx) {
+            const bool changed = before[(size_t)idx] != after[(size_t)idx];
+            const bool extra = extra_active != nullptr && idx < (int)extra_active->size() && (*extra_active)[(size_t)idx] != 0;
+            active[(size_t)idx] = (changed || extra) ? 1U : 0U;
+        }
+        if (std::none_of(active.begin(), active.end(), [](unsigned char value) { return value != 0; })) {
+            return windows;
+        }
+
+        int idx = 0;
+        while (idx < count) {
+            if (!active[(size_t)idx]) {
+                ++idx;
+                continue;
+            }
+            int start = idx;
+            int end = idx;
+            while (end + 1 < count && active[(size_t)(end + 1)]) {
+                ++end;
+            }
+            start = std::max(0, start - 1);
+            end = std::min(count - 1, end + 1);
+            while (start > 0 && after[(size_t)(start - 1)] == after[(size_t)start]) {
+                --start;
+            }
+            while (end + 1 < count && after[(size_t)(end + 1)] == after[(size_t)end]) {
+                ++end;
+            }
+            if (!windows.empty() && start <= windows.back().second + 1) {
+                windows.back().second = std::max(windows.back().second, end);
+            } else {
+                windows.push_back({start, end});
+            }
+            idx = end + 1;
+        }
+        return windows;
+    }
+
+    static std::vector<std::pair<int, int>> block_windows_to_atom_windows(
+        const std::vector<AtomizedBlock> &blocks,
+        const std::vector<std::pair<int, int>> &block_windows
+    ) {
+        std::vector<std::pair<int, int>> atom_windows;
+        atom_windows.reserve(block_windows.size());
+        for (const auto &window : block_windows) {
+            const auto &left_positions = blocks[(size_t)window.first].atom_positions;
+            const auto &right_positions = blocks[(size_t)window.second].atom_positions;
+            if (left_positions.empty() || right_positions.empty()) {
+                continue;
+            }
+            atom_windows.push_back({left_positions.front(), right_positions.back()});
+        }
+        return atom_windows;
+    }
+
+    AtomizedScore score_group_assignment(
+        int feature,
+        const std::vector<AtomizedAtom> &atoms,
+        const std::vector<std::vector<int>> &group_atom_positions,
+        const std::vector<int> *assignment = nullptr,
+        const std::vector<double> *adjacency_bonus = nullptr,
+        double adjacency_bonus_total = 0.0
+    ) const {
+        AtomizedScore score{0.0, 0.0, 0.0, 0.0, 0.0, 0};
+        double kept_adjacency_bonus = 0.0;
+        for (const auto &group : group_atom_positions) {
+            if (group.empty()) {
+                return AtomizedScore{};
+            }
+            int row_count = 0;
+            double pos_weight = 0.0;
+            double neg_weight = 0.0;
+            double teacher_pos_weight = 0.0;
+            double teacher_neg_weight = 0.0;
+            std::vector<double> class_weight;
+            std::vector<double> teacher_class_weight;
+            if (!binary_mode_) {
+                class_weight.assign((size_t)n_classes_, 0.0);
+                teacher_class_weight.assign((size_t)n_classes_, 0.0);
+            }
+            int components = 1;
+            int prev_pos = group.front();
+            for (size_t idx = 0; idx < group.size(); ++idx) {
+                const int atom_pos = group[idx];
+                if (idx > 0 && atom_pos != prev_pos + 1) {
+                    ++components;
+                    score.boundary_penalty += noncontiguous_boundary_penalty(
+                        feature,
+                        atoms[(size_t)prev_pos],
+                        atoms[(size_t)atom_pos]);
+                } else if (idx > 0 && adjacency_bonus != nullptr) {
+                    kept_adjacency_bonus += (*adjacency_bonus)[(size_t)prev_pos];
+                }
+                const AtomizedAtom &atom = atoms[(size_t)atom_pos];
+                row_count += atom.row_count;
+                pos_weight += atom.pos_weight;
+                neg_weight += atom.neg_weight;
+                teacher_pos_weight += atom.teacher_pos_weight;
+                teacher_neg_weight += atom.teacher_neg_weight;
+                if (!binary_mode_) {
+                    for (int cls = 0; cls < n_classes_; ++cls) {
+                        class_weight[(size_t)cls] += atom.class_weight[(size_t)cls];
+                        teacher_class_weight[(size_t)cls] += atom.teacher_class_weight[(size_t)cls];
+                    }
+                }
+                prev_pos = atom_pos;
+            }
+            if (row_count < min_child_size_) {
+                return AtomizedScore{};
+            }
+            if (binary_mode_) {
+                score.hard_loss += split_leaf_loss(pos_weight, neg_weight);
+                score.soft_loss += split_leaf_loss(teacher_pos_weight, teacher_neg_weight);
+                score.hard_impurity += hard_label_impurity(pos_weight, neg_weight);
+                score.soft_impurity += hard_label_impurity(teacher_pos_weight, teacher_neg_weight);
+            } else {
+                score.hard_loss += split_leaf_loss(class_weight);
+                score.soft_loss += split_leaf_loss(teacher_class_weight);
+                score.hard_impurity += hard_label_impurity(class_weight);
+                score.soft_impurity += hard_label_impurity(teacher_class_weight);
+            }
+            score.components += components;
+        }
+        if (adjacency_bonus != nullptr) {
+            score.boundary_penalty += kept_adjacency_bonus - adjacency_bonus_total;
+        } else if (feature >= 0 && assignment != nullptr) {
+            for (int atom_pos = 1; atom_pos < (int)atoms.size(); ++atom_pos) {
+                if ((*assignment)[(size_t)(atom_pos - 1)] != (*assignment)[(size_t)atom_pos]) {
+                    score.boundary_penalty -= contiguous_boundary_bonus(
+                        feature,
+                        atoms[(size_t)(atom_pos - 1)],
+                        atoms[(size_t)atom_pos]);
+                }
+            }
+        }
+        return score;
+    }
+
+    static std::vector<int> assignment_from_groups(
+        const std::vector<std::vector<int>> &groups,
+        int atom_count
+    ) {
+        std::vector<int> assign((size_t)atom_count, -1);
+        for (size_t group_idx = 0; group_idx < groups.size(); ++group_idx) {
+            for (int atom_pos : groups[group_idx]) {
+                assign[(size_t)atom_pos] = (int)group_idx;
+            }
+        }
+        return assign;
+    }
+
+    static std::vector<std::vector<int>> groups_from_assignment(
+        const std::vector<int> &assign,
+        int groups
+    ) {
+        std::vector<std::vector<int>> out((size_t)groups);
+        for (int atom_pos = 0; atom_pos < (int)assign.size(); ++atom_pos) {
+            const int group_idx = assign[(size_t)atom_pos];
+            if (group_idx >= 0 && group_idx < groups) {
+                out[(size_t)group_idx].push_back(atom_pos);
+            }
+        }
+        return out;
+    }
+
+    AtomizedCandidate candidate_from_assignment(
+        int feature,
+        const std::vector<AtomizedAtom> &atoms,
+        const std::vector<int> &assign,
+        int groups,
+        const char *family,
+        const std::vector<double> *adjacency_bonus = nullptr,
+        double adjacency_bonus_total = 0.0
+    ) const {
+        AtomizedCandidate out;
+        if (groups < 2) {
+            return out;
+        }
+        out.group_atom_positions = groups_from_assignment(assign, groups);
+        for (auto &group : out.group_atom_positions) {
+            if (group.empty()) {
+                return AtomizedCandidate{};
+            }
+        }
+        out.score = score_group_assignment(
+            feature,
+            atoms,
+            out.group_atom_positions,
+            &assign,
+            adjacency_bonus,
+            adjacency_bonus_total);
+        if (!std::isfinite(out.score.hard_impurity)) {
+            return AtomizedCandidate{};
+        }
+        out.feasible = true;
+        out.feature = feature;
+        out.assignment = assign;
+        out.family = family;
+        return out;
+    }
+
+    AtomizedCandidate lift_block_candidate_to_atoms(
+        int feature,
+        const std::vector<AtomizedBlock> &blocks,
+        const std::vector<AtomizedAtom> &atoms,
+        const AtomizedCandidate &block_candidate,
+        const char *family,
+        const std::vector<double> *adjacency_bonus = nullptr,
+        double adjacency_bonus_total = 0.0
+    ) const {
+        if (!block_candidate.feasible) {
+            return AtomizedCandidate{};
+        }
+        std::vector<int> derived_assignment;
+        const std::vector<int> &block_assignment =
+            block_candidate.assignment.size() == blocks.size()
+                ? block_candidate.assignment
+                : (derived_assignment = assignment_from_groups(
+                       block_candidate.group_atom_positions,
+                       (int)blocks.size()));
+        const std::vector<int> atom_assignment =
+            lift_block_assignment_to_atoms(blocks, block_assignment, (int)atoms.size());
+        return candidate_from_assignment(
+            feature,
+            atoms,
+            atom_assignment,
+            (int)block_candidate.group_atom_positions.size(),
+            family,
+            adjacency_bonus,
+            adjacency_bonus_total);
+    }
+
+    AtomizedCandidate refine_atomized_candidate_debr(
+        const std::vector<AtomizedAtom> &atoms,
+        const AtomizedCandidate &seed,
+        double mu_node,
+        const std::vector<std::pair<int, int>> *active_windows = nullptr,
+        AtomizedRefinementSummary *summary = nullptr,
+        const std::vector<double> *adjacency_bonus = nullptr,
+        double adjacency_bonus_total = 0.0,
+        AtomizedObjectiveMode mode = AtomizedObjectiveMode::kImpurity
+    ) const {
+        if (!seed.feasible) {
+            return seed;
+        }
+
+        AtomizedRefinementSummary local_summary;
+
+        const int atom_count = (int)atoms.size();
+        const int groups = (int)seed.group_atom_positions.size();
+        if (atom_count <= 1 || groups <= 1) {
+            return seed;
+        }
+
+        if (!binary_mode_) {
+        std::vector<int> derived_assignment;
+        std::vector<int> assign =
+            seed.assignment.size() == (size_t)atom_count
+                ? seed.assignment
+                : (derived_assignment = assignment_from_groups(seed.group_atom_positions, atom_count));
+        const bool hard_loss_mode = (mode == AtomizedObjectiveMode::kHardLoss);
+        std::vector<int> branch_rows((size_t)groups, 0);
+        std::vector<double> branch_class_weight(
+            static_cast<size_t>(groups) * static_cast<size_t>(n_classes_), 0.0);
+        std::vector<double> branch_teacher_class_weight(
+            static_cast<size_t>(groups) * static_cast<size_t>(n_classes_), 0.0);
+            for (int atom_pos = 0; atom_pos < atom_count; ++atom_pos) {
+                const int group_idx = assign[(size_t)atom_pos];
+                if (group_idx < 0 || group_idx >= groups) {
+                    return seed;
+                }
+                branch_rows[(size_t)group_idx] += atoms[(size_t)atom_pos].row_count;
+                const size_t base = static_cast<size_t>(group_idx) * static_cast<size_t>(n_classes_);
+                for (int cls = 0; cls < n_classes_; ++cls) {
+                    branch_class_weight[base + static_cast<size_t>(cls)] +=
+                        atoms[(size_t)atom_pos].class_weight[(size_t)cls];
+                    branch_teacher_class_weight[base + static_cast<size_t>(cls)] +=
+                        atoms[(size_t)atom_pos].teacher_class_weight[(size_t)cls];
+                }
+            }
+
+            while (true) {
+                check_timeout();
+
+                std::vector<double> branch_primary((size_t)groups, 0.0);
+                std::vector<double> branch_secondary((size_t)groups, 0.0);
+                for (int group_idx = 0; group_idx < groups; ++group_idx) {
+                    const size_t group_base =
+                        static_cast<size_t>(group_idx) * static_cast<size_t>(n_classes_);
+                    if (hard_loss_mode) {
+                        branch_primary[(size_t)group_idx] =
+                            split_leaf_loss_flat(branch_class_weight, n_classes_, group_base);
+                        branch_secondary[(size_t)group_idx] =
+                            hard_label_impurity_flat(branch_class_weight, n_classes_, group_base);
+                    } else {
+                        branch_primary[(size_t)group_idx] =
+                            hard_label_impurity_flat(branch_class_weight, n_classes_, group_base);
+                        branch_secondary[(size_t)group_idx] =
+                            hard_label_impurity_flat(branch_teacher_class_weight, n_classes_, group_base);
+                    }
+                }
+
+                AtomizedRefinementMove best_move;
+                int component_start = 0;
+                while (component_start < atom_count) {
+                    const int source_group = assign[(size_t)component_start];
+                    int component_end = component_start + 1;
+                    while (component_end < atom_count && assign[(size_t)component_end] == source_group) {
+                        ++component_end;
+                    }
+
+                    for (int target_group = 0; target_group < groups; ++target_group) {
+                        if (target_group == source_group) {
+                            continue;
+                        }
+                        const int source_rows_total = branch_rows[(size_t)source_group];
+                        const int target_rows_total = branch_rows[(size_t)target_group];
+                        const size_t source_base =
+                            static_cast<size_t>(source_group) * static_cast<size_t>(n_classes_);
+                        const size_t target_base =
+                            static_cast<size_t>(target_group) * static_cast<size_t>(n_classes_);
+                        const double source_primary_before = branch_primary[(size_t)source_group];
+                        const double target_primary_before = branch_primary[(size_t)target_group];
+                        const double source_secondary_before = branch_secondary[(size_t)source_group];
+                        const double target_secondary_before = branch_secondary[(size_t)target_group];
+                        auto scan_component_overlap = [&](int lo, int hi) {
+                            if (lo > hi) {
+                                return;
+                            }
+                            for (int start = lo; start <= hi; ++start) {
+                                int move_rows = 0;
+                                std::vector<double> move_class_weight((size_t)n_classes_, 0.0);
+                                std::vector<double> move_teacher_class_weight((size_t)n_classes_, 0.0);
+                                for (int end = start; end <= hi; ++end) {
+                                    const AtomizedAtom &atom = atoms[(size_t)end];
+                                    move_rows += atom.row_count;
+                                    for (int cls = 0; cls < n_classes_; ++cls) {
+                                        move_class_weight[(size_t)cls] += atom.class_weight[(size_t)cls];
+                                        move_teacher_class_weight[(size_t)cls] += atom.teacher_class_weight[(size_t)cls];
+                                    }
+
+                                    const int source_rows_after = source_rows_total - move_rows;
+                                    if (source_rows_after < min_child_size_) {
+                                        break;
+                                    }
+                                    const int target_rows_after = target_rows_total + move_rows;
+                                    if (target_rows_after < min_child_size_) {
+                                        continue;
+                                    }
+
+                                    double source_primary_after = 0.0;
+                                    double target_primary_after = 0.0;
+                                    double source_secondary_after = 0.0;
+                                    double target_secondary_after = 0.0;
+                                    if (hard_loss_mode) {
+                                        source_primary_after = split_leaf_loss_flat(
+                                            branch_class_weight,
+                                            n_classes_,
+                                            source_base);
+                                        target_primary_after = split_leaf_loss_flat(
+                                            branch_class_weight,
+                                            n_classes_,
+                                            target_base);
+                                        source_secondary_after = hard_label_impurity_flat(
+                                            branch_class_weight,
+                                            n_classes_,
+                                            source_base);
+                                        target_secondary_after = hard_label_impurity_flat(
+                                            branch_class_weight,
+                                            n_classes_,
+                                            target_base);
+                                    } else {
+                                        source_primary_after = hard_label_impurity_flat(
+                                            branch_class_weight,
+                                            n_classes_,
+                                            source_base);
+                                        target_primary_after = hard_label_impurity_flat(
+                                            branch_class_weight,
+                                            n_classes_,
+                                            target_base);
+                                        source_secondary_after = hard_label_impurity_flat(
+                                            branch_teacher_class_weight,
+                                            n_classes_,
+                                            source_base);
+                                        target_secondary_after = hard_label_impurity_flat(
+                                            branch_teacher_class_weight,
+                                            n_classes_,
+                                            target_base);
+                                    }
+                                    const double delta_primary =
+                                        (source_primary_before + target_primary_before) -
+                                        (source_primary_after + target_primary_after);
+                                    const double delta_secondary =
+                                        (source_secondary_before + target_secondary_before) -
+                                        (source_secondary_after + target_secondary_after);
+
+                                    const int source_delta_components =
+                                        (start == component_start && end == component_end - 1)
+                                            ? -1
+                                            : ((start == component_start || end == component_end - 1) ? 0 : 1);
+                                    const bool left_target =
+                                        (start > 0 && assign[(size_t)(start - 1)] == target_group);
+                                    const bool right_target =
+                                        (end + 1 < atom_count && assign[(size_t)(end + 1)] == target_group);
+                                    int target_delta_components = 0;
+                                    if (!left_target && !right_target) {
+                                        target_delta_components = 1;
+                                    } else if (left_target && right_target) {
+                                        target_delta_components = -1;
+                                    }
+
+                                    AtomizedRefinementMove move;
+                                    move.valid = true;
+                                    move.source_group = source_group;
+                                    move.target_group = target_group;
+                                    move.start = start;
+                                    move.end = end;
+                                    move.length = end - start + 1;
+                                    move.delta_components = source_delta_components + target_delta_components;
+                                    move.row_count = move_rows;
+                                    move.class_weight = move_class_weight;
+                                    move.teacher_class_weight = move_teacher_class_weight;
+                                    move.delta_hard = delta_primary;
+                                    move.delta_soft = delta_secondary;
+                                    move.delta_j = delta_primary - mu_node * (double)move.delta_components;
+                                    if (!atomized_move_is_improving(move)) {
+                                        continue;
+                                    }
+                                    if (!best_move.valid || atomized_move_better(move, best_move)) {
+                                        best_move = std::move(move);
+                                    }
+                                }
+                            }
+                        };
+
+                        if (active_windows == nullptr || active_windows->empty()) {
+                            scan_component_overlap(component_start, component_end - 1);
+                        } else {
+                            for (const auto &window : *active_windows) {
+                                const int overlap_start = std::max(component_start, window.first);
+                                const int overlap_end = std::min(component_end - 1, window.second);
+                                if (overlap_start <= overlap_end) {
+                                    scan_component_overlap(overlap_start, overlap_end);
+                                }
+                            }
+                        }
+                    }
+
+                    component_start = component_end;
+                }
+
+                if (!best_move.valid) {
+                    break;
+                }
+
+                for (int atom_pos = best_move.start; atom_pos <= best_move.end; ++atom_pos) {
+                    assign[(size_t)atom_pos] = best_move.target_group;
+                }
+
+                branch_rows[(size_t)best_move.source_group] -= best_move.row_count;
+                branch_rows[(size_t)best_move.target_group] += best_move.row_count;
+                const size_t source_base =
+                    static_cast<size_t>(best_move.source_group) * static_cast<size_t>(n_classes_);
+                const size_t target_base =
+                    static_cast<size_t>(best_move.target_group) * static_cast<size_t>(n_classes_);
+                for (int cls = 0; cls < n_classes_; ++cls) {
+                    branch_class_weight[source_base + static_cast<size_t>(cls)] -=
+                        best_move.class_weight[(size_t)cls];
+                    branch_class_weight[target_base + static_cast<size_t>(cls)] +=
+                        best_move.class_weight[(size_t)cls];
+                    branch_teacher_class_weight[source_base + static_cast<size_t>(cls)] -=
+                        best_move.teacher_class_weight[(size_t)cls];
+                    branch_teacher_class_weight[target_base + static_cast<size_t>(cls)] +=
+                        best_move.teacher_class_weight[(size_t)cls];
+                }
+
+                local_summary.moves += 1;
+                local_summary.hard_gain += best_move.delta_j + mu_node * (double)best_move.delta_components;
+                local_summary.soft_gain += best_move.delta_soft;
+                local_summary.delta_j += best_move.delta_j;
+                local_summary.component_delta += best_move.delta_components;
+            }
+
+            AtomizedCandidate refined = candidate_from_assignment(
+                seed.feature,
+                atoms,
+                assign,
+                groups,
+                seed.family,
+                adjacency_bonus,
+                adjacency_bonus_total);
+            if (!refined.feasible) {
+                return seed;
+            }
+            local_summary.improved =
+                atomized_score_better_for_refinement(refined.score, seed.score, mu_node, mode);
+            if (summary != nullptr) {
+                *summary = local_summary;
+            }
+            return local_summary.improved ? refined : seed;
+        }
+
+        std::vector<int> derived_assignment;
+        std::vector<int> assign =
+            seed.assignment.size() == (size_t)atom_count
+                ? seed.assignment
+                : (derived_assignment = assignment_from_groups(seed.group_atom_positions, atom_count));
+        const bool hard_loss_mode = (mode == AtomizedObjectiveMode::kHardLoss);
+        std::vector<int> branch_rows((size_t)groups, 0);
+        std::vector<double> branch_pos((size_t)groups, 0.0);
+        std::vector<double> branch_neg((size_t)groups, 0.0);
+        std::vector<double> branch_teacher_pos((size_t)groups, 0.0);
+        std::vector<double> branch_teacher_neg((size_t)groups, 0.0);
+        for (int atom_pos = 0; atom_pos < atom_count; ++atom_pos) {
+            const int group_idx = assign[(size_t)atom_pos];
+            if (group_idx < 0 || group_idx >= groups) {
+                return seed;
+            }
+            const AtomizedAtom &atom = atoms[(size_t)atom_pos];
+            branch_rows[(size_t)group_idx] += atom.row_count;
+            branch_pos[(size_t)group_idx] += atom.pos_weight;
+            branch_neg[(size_t)group_idx] += atom.neg_weight;
+            branch_teacher_pos[(size_t)group_idx] += atom.teacher_pos_weight;
+            branch_teacher_neg[(size_t)group_idx] += atom.teacher_neg_weight;
+        }
+        while (true) {
+            check_timeout();
+
+            std::vector<double> branch_primary((size_t)groups, 0.0);
+            std::vector<double> branch_secondary((size_t)groups, 0.0);
+            for (int group_idx = 0; group_idx < groups; ++group_idx) {
+                if (hard_loss_mode) {
+                    branch_primary[(size_t)group_idx] = split_leaf_loss(
+                        branch_pos[(size_t)group_idx],
+                        branch_neg[(size_t)group_idx]);
+                    branch_secondary[(size_t)group_idx] = hard_label_impurity(
+                        branch_pos[(size_t)group_idx],
+                        branch_neg[(size_t)group_idx]);
+                } else {
+                    branch_primary[(size_t)group_idx] = hard_label_impurity(
+                        branch_pos[(size_t)group_idx],
+                        branch_neg[(size_t)group_idx]);
+                    branch_secondary[(size_t)group_idx] = hard_label_impurity(
+                        branch_teacher_pos[(size_t)group_idx],
+                        branch_teacher_neg[(size_t)group_idx]);
+                }
+            }
+
+            AtomizedRefinementMove best_move;
+            int component_start = 0;
+            while (component_start < atom_count) {
+                const int source_group = assign[(size_t)component_start];
+                int component_end = component_start + 1;
+                while (component_end < atom_count && assign[(size_t)component_end] == source_group) {
+                    ++component_end;
+                }
+
+                for (int target_group = 0; target_group < groups; ++target_group) {
+                    if (target_group == source_group) {
+                        continue;
+                    }
+                    const int source_rows_total = branch_rows[(size_t)source_group];
+                    const int target_rows_total = branch_rows[(size_t)target_group];
+                    const double source_pos_total = branch_pos[(size_t)source_group];
+                    const double source_neg_total = branch_neg[(size_t)source_group];
+                    const double target_pos_total = branch_pos[(size_t)target_group];
+                    const double target_neg_total = branch_neg[(size_t)target_group];
+                    const double source_teacher_pos_total = branch_teacher_pos[(size_t)source_group];
+                    const double source_teacher_neg_total = branch_teacher_neg[(size_t)source_group];
+                    const double target_teacher_pos_total = branch_teacher_pos[(size_t)target_group];
+                    const double target_teacher_neg_total = branch_teacher_neg[(size_t)target_group];
+                    const double source_primary_before = branch_primary[(size_t)source_group];
+                    const double target_primary_before = branch_primary[(size_t)target_group];
+                    const double source_secondary_before = branch_secondary[(size_t)source_group];
+                    const double target_secondary_before = branch_secondary[(size_t)target_group];
+                    auto scan_component_overlap = [&](int lo, int hi) {
+                        if (lo > hi) {
+                            return;
+                        }
+                        for (int start = lo; start <= hi; ++start) {
+                            int move_rows = 0;
+                            double move_pos = 0.0;
+                            double move_neg = 0.0;
+                            double move_teacher_pos = 0.0;
+                            double move_teacher_neg = 0.0;
+                            for (int end = start; end <= hi; ++end) {
+                                const AtomizedAtom &atom = atoms[(size_t)end];
+                                move_rows += atom.row_count;
+                                move_pos += atom.pos_weight;
+                                move_neg += atom.neg_weight;
+                                move_teacher_pos += atom.teacher_pos_weight;
+                                move_teacher_neg += atom.teacher_neg_weight;
+
+                                const int source_rows_after = source_rows_total - move_rows;
+                                if (source_rows_after < min_child_size_) {
+                                    break;
+                                }
+                                const int target_rows_after = target_rows_total + move_rows;
+                                if (target_rows_after < min_child_size_) {
+                                    continue;
+                                }
+
+                                const double source_primary_after = hard_label_impurity(
+                                    source_pos_total - move_pos,
+                                    source_neg_total - move_neg);
+                                const double target_primary_after = hard_label_impurity(
+                                    target_pos_total + move_pos,
+                                    target_neg_total + move_neg);
+                                const double delta_primary =
+                                    (source_primary_before + target_primary_before) -
+                                    (source_primary_after + target_primary_after);
+
+                                const double source_secondary_after = hard_label_impurity(
+                                    source_teacher_pos_total - move_teacher_pos,
+                                    source_teacher_neg_total - move_teacher_neg);
+                                const double target_secondary_after = hard_label_impurity(
+                                    target_teacher_pos_total + move_teacher_pos,
+                                    target_teacher_neg_total + move_teacher_neg);
+                                const double delta_secondary =
+                                    (source_secondary_before + target_secondary_before) -
+                                    (source_secondary_after + target_secondary_after);
+
+                                const int source_delta_components =
+                                    (start == component_start && end == component_end - 1)
+                                        ? -1
+                                        : ((start == component_start || end == component_end - 1) ? 0 : 1);
+                                const bool left_target = (start > 0 && assign[(size_t)(start - 1)] == target_group);
+                                const bool right_target = (end + 1 < atom_count && assign[(size_t)(end + 1)] == target_group);
+                                int target_delta_components = 0;
+                                if (!left_target && !right_target) {
+                                    target_delta_components = 1;
+                                } else if (left_target && right_target) {
+                                    target_delta_components = -1;
+                                }
+
+                                AtomizedRefinementMove move;
+                                move.valid = true;
+                                move.source_group = source_group;
+                                move.target_group = target_group;
+                                move.start = start;
+                                move.end = end;
+                                move.length = end - start + 1;
+                                move.delta_components = source_delta_components + target_delta_components;
+                                move.row_count = move_rows;
+                                move.pos_weight = move_pos;
+                                move.neg_weight = move_neg;
+                                move.teacher_pos_weight = move_teacher_pos;
+                                move.teacher_neg_weight = move_teacher_neg;
+                                move.delta_hard = delta_primary;
+                                move.delta_soft = delta_secondary;
+                                move.delta_j = delta_primary - mu_node * (double)move.delta_components;
+                                if (!atomized_move_is_improving(move)) {
+                                    continue;
+                                }
+                                if (!best_move.valid || atomized_move_better(move, best_move)) {
+                                    best_move = move;
+                                }
+                            }
+                        }
+                    };
+
+                    if (active_windows == nullptr || active_windows->empty()) {
+                        scan_component_overlap(component_start, component_end - 1);
+                    } else {
+                        for (const auto &window : *active_windows) {
+                            const int overlap_start = std::max(component_start, window.first);
+                            const int overlap_end = std::min(component_end - 1, window.second);
+                            if (overlap_start <= overlap_end) {
+                                scan_component_overlap(overlap_start, overlap_end);
+                            }
+                        }
+                    }
+                }
+
+                component_start = component_end;
+            }
+
+            if (!best_move.valid) {
+                break;
+            }
+
+            for (int atom_pos = best_move.start; atom_pos <= best_move.end; ++atom_pos) {
+                assign[(size_t)atom_pos] = best_move.target_group;
+            }
+
+            branch_rows[(size_t)best_move.source_group] -= best_move.row_count;
+            branch_rows[(size_t)best_move.target_group] += best_move.row_count;
+            branch_pos[(size_t)best_move.source_group] -= best_move.pos_weight;
+            branch_pos[(size_t)best_move.target_group] += best_move.pos_weight;
+            branch_neg[(size_t)best_move.source_group] -= best_move.neg_weight;
+            branch_neg[(size_t)best_move.target_group] += best_move.neg_weight;
+            branch_teacher_pos[(size_t)best_move.source_group] -= best_move.teacher_pos_weight;
+            branch_teacher_pos[(size_t)best_move.target_group] += best_move.teacher_pos_weight;
+            branch_teacher_neg[(size_t)best_move.source_group] -= best_move.teacher_neg_weight;
+            branch_teacher_neg[(size_t)best_move.target_group] += best_move.teacher_neg_weight;
+
+            local_summary.moves += 1;
+            local_summary.hard_gain += best_move.delta_j + mu_node * (double)best_move.delta_components;
+            local_summary.soft_gain += best_move.delta_soft;
+            local_summary.delta_j += best_move.delta_j;
+            local_summary.component_delta += best_move.delta_components;
+        }
+
+        AtomizedCandidate refined = candidate_from_assignment(
+            seed.feature,
+            atoms,
+            assign,
+            groups,
+            seed.family,
+            adjacency_bonus,
+            adjacency_bonus_total);
+        if (!refined.feasible) {
+            return seed;
+        }
+        local_summary.improved = atomized_score_better_for_refinement(refined.score, seed.score, mu_node, mode);
+        if (summary != nullptr) {
+            *summary = local_summary;
+        }
+        return local_summary.improved ? refined : seed;
+    }
+
+    AtomizedCandidate solve_atomized_geometry_family(
+        const std::vector<AtomizedAtom> &atoms,
+        const AtomizedPrefixes &prefix,
+        int feature,
+        int groups,
+        AtomizedObjectiveMode mode = AtomizedObjectiveMode::kImpurity
+    ) const {
+        AtomizedCandidate out;
+        const int m = (int)atoms.size();
+        if (groups < 2 || groups > m) {
+            return out;
+        }
+
+        std::vector<std::vector<AtomizedScore>> dp((size_t)groups + 1, std::vector<AtomizedScore>((size_t)m + 1));
+        std::vector<std::vector<int>> parent((size_t)groups + 1, std::vector<int>((size_t)m + 1, -1));
+        for (int g = 0; g <= groups; ++g) {
+            for (int t = 0; t <= m; ++t) {
+                dp[(size_t)g][(size_t)t] = AtomizedScore{};
+            }
+        }
+        dp[0][0] = AtomizedScore{0.0, 0.0, 0.0, 0.0, 0.0, 0};
+
+        for (int g = 1; g <= groups; ++g) {
+            for (int t = g; t <= m; ++t) {
+                AtomizedScore best;
+                int best_p = -1;
+                for (int p = g - 1; p <= t - 1; ++p) {
+                    const AtomizedScore &prev_score = dp[(size_t)(g - 1)][(size_t)p];
+                    const bool prev_feasible = (mode == AtomizedObjectiveMode::kHardLoss)
+                        ? std::isfinite(prev_score.hard_loss)
+                        : std::isfinite(prev_score.hard_impurity);
+                    if (!prev_feasible) {
+                        continue;
+                    }
+                    const int row_count = prefix.rows[(size_t)t] - prefix.rows[(size_t)p];
+                    if (row_count < min_child_size_) {
+                        continue;
+                    }
+                    AtomizedScore cand = dp[(size_t)(g - 1)][(size_t)p];
+                    if (binary_mode_) {
+                        const double seg_pos = prefix.pos[(size_t)t] - prefix.pos[(size_t)p];
+                        const double seg_neg = prefix.neg[(size_t)t] - prefix.neg[(size_t)p];
+                        const double seg_teacher_pos = prefix.teacher_pos[(size_t)t] - prefix.teacher_pos[(size_t)p];
+                        const double seg_teacher_neg = prefix.teacher_neg[(size_t)t] - prefix.teacher_neg[(size_t)p];
+                        cand.hard_loss += split_leaf_loss(seg_pos, seg_neg);
+                        cand.soft_loss += split_leaf_loss(seg_teacher_pos, seg_teacher_neg);
+                        cand.hard_impurity += hard_label_impurity(seg_pos, seg_neg);
+                        cand.soft_impurity += hard_label_impurity(seg_teacher_pos, seg_teacher_neg);
+                    } else {
+                        cand.hard_loss += split_leaf_loss_prefix_segment(
+                            prefix.class_weight_prefix,
+                            n_classes_,
+                            p,
+                            t);
+                        cand.soft_loss += split_leaf_loss_prefix_segment(
+                            prefix.teacher_class_weight_prefix,
+                            n_classes_,
+                            p,
+                            t);
+                        cand.hard_impurity += hard_label_impurity_prefix_segment(
+                            prefix.class_weight_prefix,
+                            n_classes_,
+                            p,
+                            t);
+                        cand.soft_impurity += hard_label_impurity_prefix_segment(
+                            prefix.teacher_class_weight_prefix,
+                            n_classes_,
+                            p,
+                            t);
+                    }
+                    if (p > 0) {
+                        cand.boundary_penalty -= contiguous_boundary_bonus(
+                            feature,
+                            atoms[(size_t)(p - 1)],
+                            atoms[(size_t)p]);
+                    }
+                        cand.components += 1;
+                    if (best_p < 0 || atomized_score_better(cand, best, mode)) {
+                        best = cand;
+                        best_p = p;
+                    }
+                }
+                if (best_p >= 0) {
+                    dp[(size_t)g][(size_t)t] = best;
+                    parent[(size_t)g][(size_t)t] = best_p;
+                }
+            }
+        }
+
+        const AtomizedScore &best_score = dp[(size_t)groups][(size_t)m];
+        const bool best_feasible = (mode == AtomizedObjectiveMode::kHardLoss)
+            ? std::isfinite(best_score.hard_loss)
+            : std::isfinite(best_score.hard_impurity);
+        if (!best_feasible) {
+            return out;
+        }
+
+        std::vector<std::vector<int>> group_positions;
+        int t = m;
+        int g = groups;
+        while (g > 0) {
+            const int p = parent[(size_t)g][(size_t)t];
+            if (p < 0) {
+                return AtomizedCandidate{};
+            }
+            std::vector<int> group;
+            group.reserve((size_t)(t - p));
+            for (int pos = p; pos < t; ++pos) {
+                group.push_back(pos);
+            }
+            group_positions.push_back(std::move(group));
+            t = p;
+            --g;
+        }
+        std::reverse(group_positions.begin(), group_positions.end());
+
+        out.feasible = true;
+        out.score = best_score;
+        out.group_atom_positions = std::move(group_positions);
+        out.assignment = assignment_from_groups(out.group_atom_positions, m);
+        out.family = "geometry";
+        return out;
+    }
+
+    void record_refinement_summary(const AtomizedRefinementSummary &summary) {
+        ++debr_refine_calls_;
+        debr_total_moves_ += summary.moves;
+        debr_total_hard_gain_ += summary.hard_gain;
+        debr_total_soft_gain_ += summary.soft_gain;
+        debr_total_delta_j_ += summary.delta_j;
+        debr_total_component_delta_ += summary.component_delta;
+        if (summary.improved) {
+            ++debr_refine_improved_;
+        }
+    }
+
+    bool prepare_feature_atomized_local(
+        const std::vector<int> &indices,
+        int feature,
+        double mu_node,
+        PreparedFeatureAtomized &prepared
+    ) {
+        prepared = PreparedFeatureAtomized{};
+        if (!build_ordered_bins(indices, feature, prepared.bins)) {
+            return false;
+        }
+        if (!build_atomized_atoms(prepared.bins, feature, prepared.atoms)) {
+            return false;
+        }
+        ++atomized_features_prepared_;
+
+        const int q_support = std::max(0, (int)indices.size() / std::max(1, min_child_size_));
+        prepared.q_effective = std::min(max_groups_for_bins((int)prepared.atoms.size()), q_support);
+        if (prepared.q_effective < 2) {
+            return false;
+        }
+        prepared.atom_prefix = build_atomized_prefixes(prepared.atoms);
+        prepared.atom_adjacency_bonus.clear();
+        prepared.atom_adjacency_bonus_total = 0.0;
+        if (teacher_available_ && prepared.atoms.size() > 1U) {
+            prepared.atom_adjacency_bonus.resize(prepared.atoms.size() - 1U, 0.0);
+            for (size_t atom_pos = 0; atom_pos + 1U < prepared.atoms.size(); ++atom_pos) {
+                const double bonus = contiguous_boundary_bonus(
+                    feature,
+                    prepared.atoms[atom_pos],
+                    prepared.atoms[atom_pos + 1U]);
+                prepared.atom_adjacency_bonus[atom_pos] = bonus;
+                prepared.atom_adjacency_bonus_total += bonus;
+            }
+        }
+
+        prepared.blocks = build_atomized_blocks(prepared.atoms);
+        prepared.block_atoms = build_block_atoms(prepared.blocks);
+        prepared.block_prefix = build_atomized_prefixes(prepared.block_atoms);
+        prepared.coarse_by_groups.assign((size_t)prepared.q_effective + 1, AtomizedCoarseCandidate{});
+
+        bool any_feasible = false;
+        for (int groups = 2; groups <= prepared.q_effective; ++groups) {
+            AtomizedCoarseCandidate coarse;
+            if (groups <= (int)prepared.block_atoms.size()) {
+                AtomizedCandidate geometry_seed = solve_atomized_geometry_family(
+                    prepared.block_atoms,
+                    prepared.block_prefix,
+                    -1,
+                    groups,
+                    AtomizedObjectiveMode::kImpurity);
+                if (geometry_seed.feasible) {
+                    coarse.geometry_seed_candidate = lift_block_candidate_to_atoms(
+                        feature,
+                        prepared.blocks,
+                        prepared.atoms,
+                        geometry_seed,
+                        "geometry",
+                        &prepared.atom_adjacency_bonus,
+                        prepared.atom_adjacency_bonus_total);
+                    if (coarse.geometry_seed_candidate.feasible) {
+                        if (geometry_seed.assignment.size() == prepared.block_atoms.size()) {
+                            coarse.initial_block_assignment = geometry_seed.assignment;
+                        } else {
+                            coarse.initial_block_assignment = assignment_from_groups(
+                                geometry_seed.group_atom_positions,
+                                (int)prepared.block_atoms.size());
+                        }
+
+                        AtomizedRefinementSummary coarse_summary;
+                        AtomizedCandidate coarse_refined =
+                            refine_atomized_candidate_debr(
+                                prepared.block_atoms,
+                                geometry_seed,
+                                mu_node,
+                                nullptr,
+                                &coarse_summary);
+                        record_refinement_summary(coarse_summary);
+
+                        if (coarse_refined.assignment.size() == prepared.block_atoms.size()) {
+                            coarse.refined_block_assignment = coarse_refined.assignment;
+                        } else {
+                            coarse.refined_block_assignment = assignment_from_groups(
+                                coarse_refined.group_atom_positions,
+                                (int)prepared.block_atoms.size());
+                        }
+                        coarse.block_candidate = lift_block_candidate_to_atoms(
+                            feature,
+                            prepared.blocks,
+                            prepared.atoms,
+                            coarse_refined,
+                            "block",
+                            &prepared.atom_adjacency_bonus,
+                            prepared.atom_adjacency_bonus_total);
+                        if (coarse.block_candidate.feasible) {
+                            coarse.candidate = coarse.block_candidate;
+                        }
+                    }
+                }
+            }
+
+            AtomizedCandidate hardloss_seed = refine_mosaic_raw_seed(
+                feature,
+                prepared,
+                groups,
+                mu_node,
+                false,
+                AtomizedObjectiveMode::kHardLoss);
+            if (hardloss_seed.feasible) {
+                coarse.hardloss_candidate = std::move(hardloss_seed);
+                if (!coarse.candidate.feasible) {
+                    coarse.candidate = coarse.hardloss_candidate;
+                }
+            }
+
+            if (!coarse.candidate.feasible) {
+                continue;
+            }
+
+            prepared.coarse_by_groups[(size_t)groups] = std::move(coarse);
+            ++atomized_coarse_candidates_;
+            any_feasible = true;
+        }
+
+        prepared.valid = any_feasible;
+        return any_feasible;
+    }
+
+    AtomizedCandidate refine_mosaic_raw_seed(
+        int feature,
+        const PreparedFeatureAtomized &prepared,
+        int groups,
+        double mu_node,
+        bool root_only,
+        AtomizedObjectiveMode mode = AtomizedObjectiveMode::kImpurity
+    ) {
+        if (root_only) {
+            if (groups >= 0 && groups < (int)prepared.coarse_by_groups.size()) {
+                const AtomizedCandidate &root_seed =
+                    (mode == AtomizedObjectiveMode::kHardLoss)
+                        ? prepared.coarse_by_groups[(size_t)groups].block_candidate
+                        : prepared.coarse_by_groups[(size_t)groups].geometry_seed_candidate;
+                if (root_seed.feasible) {
+                    return root_seed;
+                }
+            }
+            return AtomizedCandidate{};
+        }
+        AtomizedCandidate raw_seed =
+            solve_atomized_geometry_family(prepared.atoms, prepared.atom_prefix, feature, groups, mode);
+        raw_seed.feature = feature;
+        raw_seed.family = (mode == AtomizedObjectiveMode::kHardLoss) ? "hardloss" : "geometry";
+        if (!raw_seed.feasible || prepared.block_atoms.empty()) {
+            return raw_seed;
+        }
+
+        std::vector<int> derived_atom_assignment;
+        const std::vector<int> &atom_assignment =
+            raw_seed.assignment.size() == prepared.atoms.size()
+                ? raw_seed.assignment
+                : (derived_atom_assignment = assignment_from_groups(
+                       raw_seed.group_atom_positions,
+                       (int)prepared.atoms.size()));
+        std::vector<int> projected_block_assignment;
+        std::vector<unsigned char> mixed_block;
+        if (!project_atom_assignment_to_blocks(
+                prepared.blocks,
+                atom_assignment,
+                projected_block_assignment,
+                mixed_block)) {
+            return raw_seed;
+        }
+
+        std::vector<int> refined_block_assignment = projected_block_assignment;
+        if (groups <= (int)prepared.block_atoms.size()) {
+            AtomizedCandidate projected_block_seed = candidate_from_assignment(
+                feature,
+                prepared.block_atoms,
+                projected_block_assignment,
+                groups,
+                "geometry");
+            if (projected_block_seed.feasible) {
+                AtomizedRefinementSummary block_summary;
+                const AtomizedCandidate refined_block = refine_atomized_candidate_debr(
+                    prepared.block_atoms,
+                    projected_block_seed,
+                    mu_node,
+                    nullptr,
+                    &block_summary);
+                record_refinement_summary(block_summary);
+                if (refined_block.assignment.size() == prepared.block_atoms.size()) {
+                    refined_block_assignment = refined_block.assignment;
+                } else {
+                    refined_block_assignment =
+                        assignment_from_groups(refined_block.group_atom_positions, (int)prepared.block_atoms.size());
+                }
+            }
+        }
+
+        std::vector<std::pair<int, int>> block_windows =
+            build_active_block_windows(projected_block_assignment, refined_block_assignment, &mixed_block);
+        if (block_windows.empty()) {
+            return raw_seed;
+        }
+
+        const std::vector<std::pair<int, int>> atom_windows =
+            block_windows_to_atom_windows(prepared.blocks, block_windows);
+        AtomizedRefinementSummary raw_summary;
+        const AtomizedCandidate refined = refine_atomized_candidate_debr(
+            prepared.atoms,
+            raw_seed,
+            mu_node,
+            &atom_windows,
+            &raw_summary,
+            &prepared.atom_adjacency_bonus,
+            prepared.atom_adjacency_bonus_total,
+            mode);
+        record_refinement_summary(raw_summary);
+        if (refined.feasible &&
+            atomized_score_better_for_refinement(refined.score, raw_seed.score, mu_node, mode)) {
+            AtomizedCandidate out = refined;
+            out.family = raw_seed.family;
+            return out;
+        }
+        return raw_seed;
+    }
+
+    AtomizedCandidate refine_mosaic_block_seed(
+        int feature,
+        const PreparedFeatureAtomized &prepared,
+        int groups,
+        double mu_node,
+        const AtomizedCoarseCandidate &coarse,
+        bool root_only
+    ) {
+        if (!coarse.hardloss_candidate.feasible) {
+            return AtomizedCandidate{};
+        }
+        if (root_only) {
+            return coarse.hardloss_candidate;
+        }
+        return refine_mosaic_raw_seed(
+            feature,
+            prepared,
+            groups,
+            mu_node,
+            false,
+            AtomizedObjectiveMode::kHardLoss);
+    }
+
+    AtomizedCandidate select_atomized_candidate_for_arity(
+        int feature,
+        const PreparedFeatureAtomized &prepared,
+        int groups,
+        double mu_node,
+        bool root_only
+    ) {
+        if (groups < 2 || groups >= (int)prepared.coarse_by_groups.size()) {
+            return AtomizedCandidate{};
+        }
+
+        const AtomizedCoarseCandidate &coarse = prepared.coarse_by_groups[(size_t)groups];
+        AtomizedCandidate geometry =
+            refine_mosaic_raw_seed(feature, prepared, groups, mu_node, root_only);
+        AtomizedCandidate block =
+            refine_mosaic_block_seed(feature, prepared, groups, mu_node, coarse, root_only);
+
+        AtomizedCandidate best;
+        if (geometry.feasible) {
+            best = geometry;
+        }
+        if (block.feasible && atomized_candidate_better(block, best, feature, feature)) {
+            best = block;
+        }
+        if (best.feasible && (std::strcmp(best.family, "hardloss") == 0 || std::strcmp(best.family, "block") == 0)) {
+            ++debr_final_block_wins_;
+        } else if (best.feasible && std::strcmp(best.family, "geometry") == 0) {
+            ++debr_final_geo_wins_;
+        }
+        return best;
+    }
+
+    static std::vector<std::pair<int, int>> atom_positions_to_spans(
+        const OrderedBins &bins,
+        const std::vector<int> &group_positions
+    ) {
+        std::vector<std::pair<int, int>> spans;
+        if (group_positions.empty()) {
+            return spans;
+        }
+        int span_lo = bins.values[(size_t)group_positions.front()];
+        int span_hi = span_lo;
+        int prev_pos = group_positions.front();
+        for (size_t i = 1; i < group_positions.size(); ++i) {
+            const int atom_pos = group_positions[i];
+            if (atom_pos == prev_pos + 1) {
+                span_hi = bins.values[(size_t)atom_pos];
+            } else {
+                spans.push_back({span_lo, span_hi});
+                span_lo = bins.values[(size_t)atom_pos];
+                span_hi = span_lo;
+            }
+            prev_pos = atom_pos;
+        }
+        spans.push_back({span_lo, span_hi});
+        return spans;
+    }
+
+    std::shared_ptr<Node> build_internal_node_from_group_spans(
+        int feature,
+        const std::vector<std::vector<std::pair<int, int>>> &group_spans,
+        const std::vector<std::shared_ptr<Node>> &group_nodes,
+        int fallback_prediction,
+        int n_samples
+    ) const {
+        if (group_spans.empty() || group_spans.size() != group_nodes.size()) {
+            return nullptr;
+        }
+
+        auto internal = std::make_shared<Node>();
+        internal->is_leaf = false;
+        internal->feature = feature;
+        internal->fallback_prediction = fallback_prediction;
+        internal->n_samples = n_samples;
+        internal->group_count = (int)group_nodes.size();
+
+        int largest_child_size = -1;
+        for (size_t i = 0; i < group_nodes.size(); ++i) {
+            if (!group_nodes[i] || group_spans[i].empty()) {
+                return nullptr;
+            }
+            internal->group_bin_spans.push_back(group_spans[i]);
+            internal->group_nodes.push_back(group_nodes[i]);
+            if (group_nodes[i]->n_samples > largest_child_size) {
+                largest_child_size = group_nodes[i]->n_samples;
+                internal->fallback_bin = group_spans[i].front().first;
+            }
+        }
+        if (internal->fallback_bin < 0) {
+            internal->fallback_bin = group_spans.front().front().first;
+        }
+        return internal;
+    }
+
+    static bool subtree_is_constant_prediction(const std::shared_ptr<Node> &node, int &prediction_out) {
+        if (!node) {
+            return false;
+        }
+        if (node->is_leaf) {
+            prediction_out = node->prediction;
+            return true;
+        }
+        int shared_prediction = -1;
+        bool first = true;
+        for (const auto &child : node->group_nodes) {
+            int child_prediction = -1;
+            if (!subtree_is_constant_prediction(child, child_prediction)) {
+                return false;
+            }
+            if (first) {
+                shared_prediction = child_prediction;
+                first = false;
+            } else if (child_prediction != shared_prediction) {
+                return false;
+            }
+        }
+        if (first) {
+            return false;
+        }
+        prediction_out = shared_prediction;
+        return true;
+    }
+
+    std::string serialized_indices_key(const std::vector<int> &indices) const {
+        std::string key;
+        key.reserve(sizeof(uint64_t) + indices.size() * 2U);
+        auto append_varint = [&](uint64_t value) {
+            while (value >= 0x80U) {
+                key.push_back(static_cast<char>((value & 0x7FU) | 0x80U));
+                value >>= 7U;
+            }
+            key.push_back(static_cast<char>(value));
+        };
+        append_varint((uint64_t)indices.size());
+        uint64_t previous = 0U;
+        for (size_t idx = 0; idx < indices.size(); ++idx) {
+            const uint64_t row = static_cast<uint64_t>(indices[idx]);
+            append_varint(idx == 0U ? row : (row - previous));
+            previous = row;
+        }
+        return key;
+    }
+
+    std::string serialized_indices_depth_key(
+        const std::vector<int> &indices,
+        int depth_remaining
+    ) const {
+        std::string key = serialized_indices_key(indices);
+        const int64_t depth_value = depth_remaining;
+        key.append(reinterpret_cast<const char *>(&depth_value), sizeof(depth_value));
+        return key;
+    }
+
+    int recursive_candidate_limit(int candidate_count, int node_depth) const {
+        if (candidate_count <= 0 || lookahead_depth_ <= 0) {
+            return 0;
+        }
+        if (node_depth < lookahead_depth_) {
+            if (node_depth <= 0) {
+                return std::min(candidate_count, 160);
+            }
+            if (node_depth == 1) {
+                return std::min(candidate_count, 64);
+            }
+            return std::min(candidate_count, 24);
+        }
+        return 0;
+    }
+
+    GreedyResult greedy_complete(std::vector<int> indices, int depth_remaining) {
+        check_timeout();
+        ++greedy_subproblem_calls_;
+
+        const std::string state_key = serialized_indices_depth_key(indices, depth_remaining);
+        auto cache_it = greedy_cache_.find(state_key);
+        if (cache_it != greedy_cache_.end()) {
+            ++greedy_cache_hits_;
+            return cache_it->second.result;
+        }
+
+        const SubproblemStats stats = compute_subproblem_stats(indices);
+        auto [leaf_objective, leaf_tree] = leaf_solution(stats);
+        if (depth_remaining <= 0) {
+            GreedyResult solved{leaf_objective, leaf_tree};
+            cache_store(state_key, solved, depth_remaining);
+            return solved;
+        }
+        if (stats.pure) {
+            GreedyResult solved{leaf_objective, leaf_tree};
+            cache_store(state_key, solved, depth_remaining);
+            return solved;
+        }
+        if ((int)indices.size() < min_split_size_) {
+            GreedyResult solved{leaf_objective, leaf_tree};
+            cache_store(state_key, solved, depth_remaining);
+            return solved;
+        }
+
+        const double mu_node = effective_sample_unit(stats);
+        const bool root_only = (depth_remaining == full_depth_budget_);
+        const int node_depth = full_depth_budget_ - depth_remaining;
+        std::vector<RankedAtomizedCandidate> ranked_candidates;
+        std::vector<PreparedFeatureAtomized> prepared_by_feature((size_t)n_features_);
+
+        double best_coarse_proxy = kInfinity;
+        for (int feature = 0; feature < n_features_; ++feature) {
+            PreparedFeatureAtomized prepared;
+            if (!prepare_feature_atomized_local(indices, feature, mu_node, prepared)) {
+                continue;
+            }
+            prepared_by_feature[(size_t)feature] = std::move(prepared);
+            const auto &coarse_by_groups = prepared_by_feature[(size_t)feature].coarse_by_groups;
+            for (size_t groups = 2; groups < coarse_by_groups.size(); ++groups) {
+                const AtomizedCandidate &coarse_candidate = coarse_by_groups[groups].candidate;
+                if (!coarse_candidate.feasible) {
+                    continue;
+                }
+                best_coarse_proxy = std::min(
+                    best_coarse_proxy,
+                    atomized_score_proxy(coarse_candidate.score, mu_node));
+            }
+        }
+
+        for (int feature = 0; feature < n_features_; ++feature) {
+            const PreparedFeatureAtomized &prepared = prepared_by_feature[(size_t)feature];
+            if (!prepared.valid) {
+                continue;
+            }
+            for (size_t groups = 2; groups < prepared.coarse_by_groups.size(); ++groups) {
+                const AtomizedCandidate &coarse_candidate = prepared.coarse_by_groups[groups].candidate;
+                if (!coarse_candidate.feasible) {
+                    continue;
+                }
+                if (atomized_score_proxy(coarse_candidate.score, mu_node) >
+                    best_coarse_proxy + mu_node + kEpsUpdate) {
+                    continue;
+                }
+
+                AtomizedCandidate candidate =
+                    select_atomized_candidate_for_arity(
+                        feature,
+                        prepared,
+                        (int)groups,
+                        mu_node,
+                        root_only);
+                if (!candidate.feasible) {
+                    continue;
+                }
+                ++greedy_interval_evals_;
+                ++atomized_final_candidates_;
+                ranked_candidates.push_back(RankedAtomizedCandidate{feature, (int)groups, candidate});
+            }
+        }
+        std::stable_sort(
+            ranked_candidates.begin(),
+            ranked_candidates.end(),
+            [&](const RankedAtomizedCandidate &lhs, const RankedAtomizedCandidate &rhs) {
+                return atomized_candidate_better(
+                    lhs.candidate,
+                    rhs.candidate,
+                    lhs.feature,
+                    rhs.feature);
+            });
+
+        GreedyResult solved{leaf_objective, leaf_tree};
+        const int recurse_limit =
+            (depth_remaining > 1) ? recursive_candidate_limit((int)ranked_candidates.size(), node_depth) : 0;
+        double best_recursive_objective = kInfinity;
+        bool found_recursive_winner = false;
+        double best_one_step_objective = kInfinity;
+        bool found_nonconstant_one_step = false;
+        for (size_t ranked_idx = 0; ranked_idx < ranked_candidates.size(); ++ranked_idx) {
+            const auto &ranked = ranked_candidates[ranked_idx];
+            const bool recurse_competitive = ((int)ranked_idx < recurse_limit);
+            if (!recurse_competitive && found_recursive_winner) {
+                break;
+            }
+            const PreparedFeatureAtomized &prepared = prepared_by_feature[(size_t)ranked.feature];
+            if (prepared.valid) {
+                const OrderedBins &bins = prepared.bins;
+                double objective = 0.0;
+                std::vector<std::shared_ptr<Node>> child_nodes;
+                std::vector<std::vector<std::pair<int, int>>> group_spans;
+                child_nodes.reserve(ranked.candidate.group_atom_positions.size());
+                group_spans.reserve(ranked.candidate.group_atom_positions.size());
+                bool build_ok = true;
+                bool has_prediction_flip = false;
+                for (const auto &group : ranked.candidate.group_atom_positions) {
+                    std::vector<int> subset_sorted;
+                    gather_group_members_sorted(bins, group, subset_sorted);
+                    if ((int)subset_sorted.size() < min_child_size_) {
+                        build_ok = false;
+                        break;
+                    }
+                    if (depth_remaining == 1) {
+                        const SubproblemStats child_stats = compute_subproblem_stats(subset_sorted);
+                        auto [child_objective, child_tree] = leaf_solution(child_stats);
+                        objective += child_objective;
+                        if (child_stats.prediction != stats.prediction) {
+                            has_prediction_flip = true;
+                        }
+                        child_nodes.push_back(child_tree);
+                    } else {
+                        GreedyResult child = greedy_complete(std::move(subset_sorted), depth_remaining - 1);
+                        objective += child.objective;
+                        if (recurse_competitive && found_recursive_winner &&
+                            objective >= best_recursive_objective - kEpsUpdate) {
+                            build_ok = false;
+                            break;
+                        }
+                        child_nodes.push_back(child.tree);
+                    }
+                    group_spans.push_back(atom_positions_to_spans(bins, group));
+                }
+                if (build_ok) {
+                    std::shared_ptr<Node> tree = build_internal_node_from_group_spans(
+                        ranked.feature,
+                        group_spans,
+                        child_nodes,
+                        leaf_tree->prediction,
+                        (int)indices.size());
+                    if (depth_remaining == 1) {
+                        if (tree && has_prediction_flip) {
+                            if (!found_nonconstant_one_step || objective + kEpsUpdate < best_one_step_objective) {
+                                found_nonconstant_one_step = true;
+                                best_one_step_objective = objective;
+                                solved = GreedyResult{objective, tree};
+                            }
+                        }
+                        continue;
+                    }
+                    int constant_prediction = -1;
+                    if (tree && !subtree_is_constant_prediction(tree, constant_prediction)) {
+                        if (recurse_competitive) {
+                            if (!found_recursive_winner || objective + kEpsUpdate < best_recursive_objective) {
+                                found_recursive_winner = true;
+                                best_recursive_objective = objective;
+                                solved = GreedyResult{objective, tree};
+                            }
+                            continue;
+                        }
+                        solved = GreedyResult{objective, tree};
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (solved.tree && !solved.tree->is_leaf) {
+            ++greedy_internal_nodes_;
+        }
+        cache_store(state_key, solved, depth_remaining);
+        return solved;
+    }
+
+    GreedyResult solve_subproblem(std::vector<int> indices, int depth_remaining) {
+        return greedy_complete(std::move(indices), depth_remaining);
+    }

@@ -1,0 +1,43 @@
+{
+  "csv_path": "/home/users/yz1075/msdt/datasets/heloc/raw/heloc_data_matrix.csv",
+  "feature_columns": [
+    "ExternalRiskEstimate",
+    "MSinceOldestTradeOpen",
+    "MSinceMostRecentTradeOpen",
+    "AverageMInFile",
+    "NumSatisfactoryTrades",
+    "NumTrades60Ever2DerogPubRec",
+    "NumTrades90Ever2DerogPubRec",
+    "PercentTradesNeverDelq",
+    "MSinceMostRecentDelq",
+    "MaxDelq2PublicRecLast12M",
+    "NumTotalTrades",
+    "NumTradesOpeninLast12M",
+    "PercentInstallTrades",
+    "MSinceMostRecentInqexcl7days",
+    "NumInqLast6M",
+    "NumInqLast6Mexcl7days",
+    "NetFractionRevolvingBurden",
+    "NetFractionInstallBurden",
+    "NumRevolvingTradesWBalance",
+    "NumInstallTradesWBalance",
+    "NumBank2NatlTradesWHighUtilization",
+    "PercentTradesWBalance"
+  ],
+  "n_columns": 23,
+  "n_rows": 10000,
+  "schema_version": 1,
+  "spec": {
+    "description": "HELOC credit risk classification.",
+    "local_path": null,
+    "name": "heloc",
+    "openml_id": 45023,
+    "source": "openml",
+    "target_name": "RiskPerformance",
+    "task": "classification",
+    "uci_id": null
+  },
+  "target_columns": [
+    "RiskPerformance"
+  ]
+}

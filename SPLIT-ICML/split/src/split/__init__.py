@@ -14,7 +14,6 @@ from ._binarizer import NumericBinarizer
 from ._threshold_guessing import ThresholdGuessBinarizer
 from .MSPLIT import MSPLIT
 from .MSPLIT_RUSHDP import MSPLIT_RUSHDP
-from .cart_binning import CARTBinner, fit_cart_binner
 
 __all__ = [
     "__version__",
@@ -22,8 +21,6 @@ __all__ = [
     "ThresholdGuessBinarizer",
     "MSPLIT",
     "MSPLIT_RUSHDP",
-    "CARTBinner",
-    "fit_cart_binner",
 ]
 
 # Default placeholders when the compiled extension is not available.

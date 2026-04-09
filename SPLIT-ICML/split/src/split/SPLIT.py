@@ -7,14 +7,17 @@ from sklearn.model_selection import train_test_split
 import time
 from .utils import num_leaves, tree_to_dict
 
-class SPLIT: 
-    def __init__(self, time_limit=60, verbose=False, reg=0.001, 
-                 lookahead_depth_budget=3, full_depth_budget = 6,
-                 similar_support=False, allow_small_reg=True, greedy_postprocess = False, 
-                 binarize = False, gbdt_n_est=50, gbdt_max_depth=1, 
+class SPLIT:
+    def __init__(self, time_limit=60, verbose=False, reg=0.001,
+                 lookahead_depth_budget=None, full_depth_budget=6,
+                 similar_support=False, allow_small_reg=True, greedy_postprocess=False,
+                 binarize=False, gbdt_n_est=50, gbdt_max_depth=1,
                  ):
 
-        # check that lookahead is a valid argument: 
+        if lookahead_depth_budget is None:
+            lookahead_depth_budget = max(1, (full_depth_budget + 1) // 2)
+
+        # check that lookahead is a valid argument:
         if lookahead_depth_budget == 1:
             print(f"Warning: lookahead {lookahead_depth_budget} equals 1. " +
                   "This means the lookahead will be ignored (depth 1 is just the root).")

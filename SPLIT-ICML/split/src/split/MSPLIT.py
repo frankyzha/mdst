@@ -1,22 +1,17 @@
-"""Multiway SPLIT-style tree solver with CART discretization and lookahead greedy completion."""
+"""Multiway SPLIT-style tree solver with LightGBM bins and lookahead greedy completion."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple, Union
+import os
 import json
 import time
 import warnings
 
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
 from sklearn.utils.validation import check_array, check_is_fitted
-
-from .cart_binning import fit_cart_binner
 
 try:
     from ._libgosdt import msplit_fit as _cpp_msplit_fit
@@ -69,81 +64,55 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
 
     def __init__(
         self,
-        lookahead_depth_budget: int = 2,
+        lookahead_depth_budget: int | None = None,
+        lookahead_depth: int | None = None,
         full_depth_budget: int = 5,
         reg: float = 0.01,
-        branch_penalty: float = 0.0,
-        max_bins: int = 5,
-        min_samples_leaf: int = 10,
+        family1_soft_weight: float = 0.25,
         min_child_size: int = 5,
+        min_split_size: int | None = None,
         max_branching: int = 0,
         time_limit: int = 100,
         verbose: bool = False,
         random_state: int = 0,
-        input_is_binned: bool = False,
         use_cpp_solver: bool = True,
-        interval_partition_solver: str = "rush_dp",
-        approx_mode: bool = False,
-        patch_budget_per_feature: int = 12,
-        exactify_top_m: int = 2,
-        tau_mode: str = "lambda_sqrt_r",
-        approx_feature_scan_limit: int = 0,
-        approx_ref_shortlist_enabled: bool = True,
-        approx_ref_widen_max: int = 1,
-        approx_challenger_sweep_enabled: bool = False,
-        approx_challenger_sweep_max_features: int = 3,
-        approx_challenger_sweep_max_patch_calls_per_node: int = 0,
+        **legacy_kwargs,
     ):
+        del legacy_kwargs
         self.lookahead_depth_budget = lookahead_depth_budget
+        self.lookahead_depth = lookahead_depth
         self.full_depth_budget = full_depth_budget
         self.reg = reg
-        self.branch_penalty = branch_penalty
-        self.max_bins = max_bins
-        self.min_samples_leaf = min_samples_leaf
+        self.family1_soft_weight = family1_soft_weight
         self.min_child_size = min_child_size
+        self.min_split_size = min_split_size
         self.max_branching = max_branching
         self.time_limit = time_limit
         self.verbose = verbose
         self.random_state = random_state
-        self.input_is_binned = input_is_binned
         self.use_cpp_solver = use_cpp_solver
-        self.interval_partition_solver = interval_partition_solver
-        self.approx_mode = approx_mode
-        self.patch_budget_per_feature = patch_budget_per_feature
-        self.exactify_top_m = exactify_top_m
-        self.tau_mode = tau_mode
-        self.approx_feature_scan_limit = approx_feature_scan_limit
-        self.approx_ref_shortlist_enabled = approx_ref_shortlist_enabled
-        self.approx_ref_widen_max = approx_ref_widen_max
-        self.approx_challenger_sweep_enabled = approx_challenger_sweep_enabled
-        self.approx_challenger_sweep_max_features = approx_challenger_sweep_max_features
-        self.approx_challenger_sweep_max_patch_calls_per_node = (
-            approx_challenger_sweep_max_patch_calls_per_node
-        )
 
-    def fit(self, X, y, sample_weight=None):
+    def fit(
+        self,
+        X,
+        y,
+        sample_weight=None,
+        teacher_logit=None,
+        teacher_boundary_gain=None,
+        teacher_boundary_cover=None,
+        teacher_boundary_value_jump=None,
+        **kwargs,
+    ):
         y_encoded, class_labels = self._encode_target(y)
         self.class_labels_ = class_labels
         self.classes_ = class_labels
-
-        if self.input_is_binned:
-            Z = check_array(X, ensure_2d=True, dtype=np.int32)
-            if (Z < 0).any():
-                raise ValueError("Binned input must be non-negative integer values")
-            self.preprocessor_ = None
-            self.binner_ = None
-            self.feature_names_ = [f"x{i}" for i in range(Z.shape[1])]
-        else:
-            X_processed, feature_names = self._fit_and_transform_preprocessor(X)
-            self.feature_names_ = feature_names
-            self.binner_ = fit_cart_binner(
-                X_processed,
-                y_encoded,
-                max_bins=self.max_bins,
-                min_samples_leaf=self.min_samples_leaf,
-                random_state=self.random_state,
-            )
-            Z = self.binner_.transform(X_processed)
+        Z = check_array(X, ensure_2d=True, dtype=None)
+        if not np.issubdtype(np.asarray(Z).dtype, np.integer):
+            raise ValueError("MSPLIT expects LightGBM-binned integer features")
+        Z = np.asarray(Z, dtype=np.int32)
+        if (Z < 0).any():
+            raise ValueError("Binned input must be non-negative integer values")
+        self.feature_names_ = [f"x{i}" for i in range(Z.shape[1])]
 
         self._Z_train = np.asarray(Z, dtype=np.int32)
         self._y_train = np.asarray(y_encoded, dtype=np.int32)
@@ -172,70 +141,272 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
             raise ValueError("max_branching must be >= 0 (0 means unlimited)")
         if self.reg < 0:
             raise ValueError("reg must be non-negative")
-        if self.branch_penalty < 0:
-            raise ValueError("branch_penalty must be non-negative")
-        if int(self.patch_budget_per_feature) < 0:
-            raise ValueError("patch_budget_per_feature must be >= 0")
-        if int(self.exactify_top_m) < 0:
-            raise ValueError("exactify_top_m must be >= 0")
-        if int(self.approx_feature_scan_limit) < 0:
-            raise ValueError("approx_feature_scan_limit must be >= 0")
-        if int(self.approx_ref_widen_max) < 0:
-            raise ValueError("approx_ref_widen_max must be >= 0")
-        if int(self.approx_challenger_sweep_max_features) < 1:
-            raise ValueError("approx_challenger_sweep_max_features must be >= 1")
-        if int(self.approx_challenger_sweep_max_patch_calls_per_node) < 0:
-            raise ValueError("approx_challenger_sweep_max_patch_calls_per_node must be >= 0")
-        tau_mode_raw = str(getattr(self, "tau_mode", "lambda_sqrt_r")).strip().lower()
-        tau_mode_map = {"lambda": 0, "lambda_sqrt_r": 1}
-        if tau_mode_raw not in tau_mode_map:
-            raise ValueError("tau_mode must be one of {'lambda', 'lambda_sqrt_r'}")
-        tau_mode_code = int(tau_mode_map[tau_mode_raw])
 
-        solver_name = str(getattr(self, "interval_partition_solver", "rush_dp")).strip().lower()
-        if solver_name in {"optimal_dp", "optimal", "dp"}:
-            partition_strategy = 0
-            solver_name = "optimal_dp"
-        elif solver_name in {"rush_dp", "rushdp", "rush"}:
-            partition_strategy = 1
-            solver_name = "rush_dp"
+        if self.lookahead_depth is not None:
+            resolved_lookahead_depth = int(self.lookahead_depth)
+        elif self.lookahead_depth_budget is not None:
+            resolved_lookahead_depth = int(self.lookahead_depth_budget)
         else:
-            raise ValueError(
-                "interval_partition_solver must be one of "
-                "{'optimal_dp', 'rush_dp'}"
-            )
-        self.interval_partition_solver_ = solver_name
-
-        self.effective_lookahead_depth_ = max(1, min(self.lookahead_depth_budget, self.full_depth_budget))
+            resolved_lookahead_depth = max(1, (self.full_depth_budget + 1) // 2)
+        self.effective_lookahead_depth_ = max(1, min(resolved_lookahead_depth, self.full_depth_budget))
         if self.use_cpp_solver and _cpp_msplit_fit is not None:
-            cpp_result = _cpp_msplit_fit(
-                self._Z_train,
-                self._y_train,
-                self._w_train,
-                int(self.full_depth_budget),
-                int(self.effective_lookahead_depth_),
-                float(self.reg),
-                float(self.branch_penalty),
-                int(self.min_child_size),
-                float(self.time_limit),
-                int(self.max_branching),
-                int(partition_strategy),
-                bool(self.approx_mode),
-                int(self.patch_budget_per_feature),
-                int(self.exactify_top_m),
-                int(tau_mode_code),
-                int(self.approx_feature_scan_limit),
-                bool(self.approx_ref_shortlist_enabled),
-                int(self.approx_ref_widen_max),
-                bool(self.approx_challenger_sweep_enabled),
-                int(self.approx_challenger_sweep_max_features),
-                int(self.approx_challenger_sweep_max_patch_calls_per_node),
-            )
+            restore_cache_env = False
+            previous_cache_env = os.environ.get("MSPLIT_GREEDY_CACHE_MAX_DEPTH")
+            if previous_cache_env is None and self.full_depth_budget <= 2:
+                # Tiny exact trees repeatedly revisit the same subproblems.
+                # The native solver benefits from a shallow greedy cache here,
+                # but we do not want to leak that process-wide setting into
+                # larger fits, so set it only for the duration of this call.
+                os.environ["MSPLIT_GREEDY_CACHE_MAX_DEPTH"] = str(self.full_depth_budget)
+                restore_cache_env = True
+            try:
+                cpp_result = _cpp_msplit_fit(
+                    self._Z_train,
+                    self._y_train,
+                    self._w_train,
+                    teacher_logit,
+                    teacher_boundary_gain,
+                    teacher_boundary_cover,
+                    teacher_boundary_value_jump,
+                    int(self.full_depth_budget),
+                    int(self.effective_lookahead_depth_),
+                    float(self.reg),
+                    int(getattr(self, "min_split_size", 0) or 0),
+                    int(self.min_child_size),
+                    float(self.time_limit),
+                    int(self.max_branching),
+                    float(getattr(self, "family1_soft_weight", 0.25)),
+                )
+            finally:
+                if restore_cache_env:
+                    os.environ.pop("MSPLIT_GREEDY_CACHE_MAX_DEPTH", None)
             tree_obj = json.loads(str(cpp_result["tree"]))
             self.tree_ = self._dict_to_tree(tree_obj)
-            self.lower_bound_ = float(cpp_result["lowerbound"])
-            self.upper_bound_ = float(cpp_result["upperbound"])
-            self.objective_ = float(cpp_result["objective"])
+            objective_value = float(cpp_result.get("objective", 0.0))
+            self.lower_bound_ = float(cpp_result.get("lowerbound", objective_value))
+            self.upper_bound_ = float(cpp_result.get("upperbound", objective_value))
+            self.objective_ = objective_value
+            self.family_compare_total_ = int(cpp_result.get("family_compare_total", 0))
+            self.family_compare_equivalent_ = int(cpp_result.get("family_compare_equivalent", 0))
+            self.family1_both_wins_ = int(cpp_result.get("family1_both_wins", 0))
+            self.family2_hard_loss_wins_ = int(cpp_result.get("family2_hard_loss_wins", 0))
+            self.family2_hard_impurity_wins_ = int(cpp_result.get("family2_hard_impurity_wins", 0))
+            self.family2_both_wins_ = int(cpp_result.get("family2_both_wins", 0))
+            self.family_metric_disagreement_ = int(cpp_result.get("family_metric_disagreement", 0))
+            self.family_hard_loss_ties_ = int(cpp_result.get("family_hard_loss_ties", 0))
+            self.family_hard_impurity_ties_ = int(cpp_result.get("family_hard_impurity_ties", 0))
+            self.family_joint_impurity_ties_ = int(cpp_result.get("family_joint_impurity_ties", 0))
+            self.family_neither_both_wins_ = int(cpp_result.get("family_neither_both_wins", 0))
+            self.family1_selected_by_equivalence_ = int(cpp_result.get("family1_selected_by_equivalence", 0))
+            self.family1_selected_by_dominance_ = int(cpp_result.get("family1_selected_by_dominance", 0))
+            self.family2_selected_by_dominance_ = int(cpp_result.get("family2_selected_by_dominance", 0))
+            self.family_sent_both_ = int(cpp_result.get("family_sent_both", 0))
+            self.family1_hard_loss_sum_ = float(cpp_result.get("family1_hard_loss_sum", 0.0))
+            self.family2_hard_loss_sum_ = float(cpp_result.get("family2_hard_loss_sum", 0.0))
+            self.family_hard_loss_delta_sum_ = float(cpp_result.get("family_hard_loss_delta_sum", 0.0))
+            self.family1_hard_impurity_sum_ = float(cpp_result.get("family1_hard_impurity_sum", 0.0))
+            self.family2_hard_impurity_sum_ = float(cpp_result.get("family2_hard_impurity_sum", 0.0))
+            self.family_hard_impurity_delta_sum_ = float(cpp_result.get("family_hard_impurity_delta_sum", 0.0))
+            self.family1_soft_impurity_sum_ = float(cpp_result.get("family1_soft_impurity_sum", 0.0))
+            self.family2_soft_impurity_sum_ = float(cpp_result.get("family2_soft_impurity_sum", 0.0))
+            self.family_soft_impurity_delta_sum_ = float(cpp_result.get("family_soft_impurity_delta_sum", 0.0))
+            self.family1_joint_impurity_sum_ = float(cpp_result.get("family1_joint_impurity_sum", 0.0))
+            self.family2_joint_impurity_sum_ = float(cpp_result.get("family2_joint_impurity_sum", 0.0))
+            self.family_joint_impurity_delta_sum_ = float(cpp_result.get("family_joint_impurity_delta_sum", 0.0))
+            self.debr_refine_calls_ = int(cpp_result.get("debr_refine_calls", 0))
+            self.debr_refine_improved_ = int(cpp_result.get("debr_refine_improved", 0))
+            self.debr_total_moves_ = int(cpp_result.get("debr_total_moves", 0))
+            self.debr_bridge_policy_calls_ = int(cpp_result.get("debr_bridge_policy_calls", 0))
+            self.debr_refine_windowed_calls_ = int(
+                cpp_result.get("debr_refine_windowed_calls", 0)
+            )
+            self.debr_refine_unwindowed_calls_ = int(
+                cpp_result.get("debr_refine_unwindowed_calls", 0)
+            )
+            self.debr_refine_overlap_segments_ = int(
+                cpp_result.get("debr_refine_overlap_segments", 0)
+            )
+            self.debr_refine_calls_with_overlap_ = int(
+                cpp_result.get("debr_refine_calls_with_overlap", 0)
+            )
+            self.debr_refine_calls_without_overlap_ = int(
+                cpp_result.get("debr_refine_calls_without_overlap", 0)
+            )
+            self.debr_candidate_total_ = int(cpp_result.get("debr_candidate_total", 0))
+            self.debr_candidate_legal_ = int(cpp_result.get("debr_candidate_legal", 0))
+            self.debr_candidate_source_size_rejects_ = int(
+                cpp_result.get("debr_candidate_source_size_rejects", 0)
+            )
+            self.debr_candidate_target_size_rejects_ = int(
+                cpp_result.get("debr_candidate_target_size_rejects", 0)
+            )
+            self.debr_candidate_descent_eligible_ = int(
+                cpp_result.get("debr_candidate_descent_eligible", 0)
+            )
+            self.debr_candidate_descent_rejected_ = int(
+                cpp_result.get("debr_candidate_descent_rejected", 0)
+            )
+            self.debr_candidate_bridge_eligible_ = int(
+                cpp_result.get("debr_candidate_bridge_eligible", 0)
+            )
+            self.debr_candidate_bridge_window_blocked_ = int(
+                cpp_result.get("debr_candidate_bridge_window_blocked", 0)
+            )
+            self.debr_candidate_bridge_used_blocked_ = int(
+                cpp_result.get("debr_candidate_bridge_used_blocked", 0)
+            )
+            self.debr_candidate_bridge_guide_rejected_ = int(
+                cpp_result.get("debr_candidate_bridge_guide_rejected", 0)
+            )
+            self.debr_candidate_cleanup_eligible_ = int(
+                cpp_result.get("debr_candidate_cleanup_eligible", 0)
+            )
+            self.debr_candidate_cleanup_primary_rejected_ = int(
+                cpp_result.get("debr_candidate_cleanup_primary_rejected", 0)
+            )
+            self.debr_candidate_cleanup_complexity_rejected_ = int(
+                cpp_result.get("debr_candidate_cleanup_complexity_rejected", 0)
+            )
+            self.debr_candidate_score_rejected_ = int(
+                cpp_result.get("debr_candidate_score_rejected", 0)
+            )
+            self.debr_descent_moves_ = int(cpp_result.get("debr_descent_moves", 0))
+            self.debr_bridge_moves_ = int(cpp_result.get("debr_bridge_moves", 0))
+            self.debr_simplify_moves_ = int(cpp_result.get("debr_simplify_moves", 0))
+            self.debr_source_group_row_size_histogram_ = list(
+                cpp_result.get("debr_source_group_row_size_histogram", [])
+            )
+            self.debr_source_component_atom_size_histogram_ = list(
+                cpp_result.get("debr_source_component_atom_size_histogram", [])
+            )
+            self.debr_source_component_row_size_histogram_ = list(
+                cpp_result.get("debr_source_component_row_size_histogram", [])
+            )
+            self.debr_total_hard_gain_ = float(cpp_result.get("debr_total_hard_gain", 0.0))
+            self.debr_total_soft_gain_ = float(cpp_result.get("debr_total_soft_gain", 0.0))
+            self.debr_total_delta_j_ = float(cpp_result.get("debr_total_delta_j", 0.0))
+            self.debr_total_component_delta_ = int(cpp_result.get("debr_total_component_delta", 0))
+            self.debr_final_geo_wins_ = int(cpp_result.get("debr_final_geo_wins", 0))
+            self.debr_final_block_wins_ = int(cpp_result.get("debr_final_block_wins", 0))
+            self.native_n_classes_ = int(cpp_result.get("native_n_classes", len(class_labels)))
+            self.native_teacher_class_count_ = int(cpp_result.get("native_teacher_class_count", 0))
+            self.native_binary_mode_ = int(cpp_result.get("native_binary_mode", int(len(class_labels) == 2)))
+            self.atomized_features_prepared_ = int(cpp_result.get("atomized_features_prepared", 0))
+            self.atomized_coarse_candidates_ = int(cpp_result.get("atomized_coarse_candidates", 0))
+            self.atomized_final_candidates_ = int(cpp_result.get("atomized_final_candidates", 0))
+            self.atomized_coarse_pruned_candidates_ = int(
+                cpp_result.get("atomized_coarse_pruned_candidates", 0)
+            )
+            self.greedy_feature_survivor_histogram_ = list(
+                cpp_result.get("greedy_feature_survivor_histogram", [])
+            )
+            self.nominee_unique_total_ = int(cpp_result.get("nominee_unique_total", 0))
+            self.nominee_child_interval_lookups_ = int(
+                cpp_result.get("nominee_child_interval_lookups", 0)
+            )
+            self.nominee_child_interval_unique_ = int(
+                cpp_result.get("nominee_child_interval_unique", 0)
+            )
+            self.nominee_exactified_total_ = int(cpp_result.get("nominee_exactified_total", 0))
+            self.nominee_incumbent_updates_ = int(cpp_result.get("nominee_incumbent_updates", 0))
+            self.nominee_threatening_samples_ = int(cpp_result.get("nominee_threatening_samples", 0))
+            self.nominee_threatening_sum_ = float(cpp_result.get("nominee_threatening_sum", 0.0))
+            self.nominee_threatening_max_ = int(cpp_result.get("nominee_threatening_max", 0))
+            self.atomized_feature_atom_count_histogram_ = list(
+                cpp_result.get("atomized_feature_atom_count_histogram", [])
+            )
+            self.atomized_feature_block_atom_count_histogram_ = list(
+                cpp_result.get("atomized_feature_block_atom_count_histogram", [])
+            )
+            self.atomized_feature_q_effective_histogram_ = list(
+                cpp_result.get("atomized_feature_q_effective_histogram", [])
+            )
+            self.greedy_feature_preserved_histogram_ = list(
+                cpp_result.get("greedy_feature_preserved_histogram", [])
+            )
+            self.greedy_candidate_count_histogram_ = list(
+                cpp_result.get("greedy_candidate_count_histogram", [])
+            )
+            self.per_node_prepared_features_ = list(
+                cpp_result.get(
+                    "per_node_prepared_features",
+                    self.greedy_feature_preserved_histogram_,
+                )
+            )
+            self.per_node_candidate_count_ = list(
+                cpp_result.get(
+                    "per_node_candidate_count",
+                    self.greedy_candidate_count_histogram_,
+                )
+            )
+            self.per_node_total_weight_ = list(cpp_result.get("per_node_total_weight", []))
+            self.per_node_mu_node_ = list(cpp_result.get("per_node_mu_node", []))
+            self.per_node_candidate_upper_bounds_ = list(
+                cpp_result.get("per_node_candidate_upper_bounds", [])
+            )
+            self.per_node_candidate_lower_bounds_ = list(
+                cpp_result.get("per_node_candidate_lower_bounds", [])
+            )
+            self.nominee_elbow_prefix_total_ = int(cpp_result.get("nominee_elbow_prefix_total", 0))
+            self.nominee_elbow_prefix_max_ = int(cpp_result.get("nominee_elbow_prefix_max", 0))
+            self.nominee_elbow_prefix_histogram_ = list(
+                cpp_result.get("nominee_elbow_prefix_histogram", [])
+            )
+            self.profiling_lp_solve_calls_ = int(cpp_result.get("profiling_lp_solve_calls", 0))
+            self.profiling_lp_solve_sec_ = float(cpp_result.get("profiling_lp_solve_sec", 0.0))
+            self.profiling_pricing_calls_ = int(cpp_result.get("profiling_pricing_calls", 0))
+            self.profiling_pricing_sec_ = float(cpp_result.get("profiling_pricing_sec", 0.0))
+            self.profiling_greedy_complete_calls_ = int(
+                cpp_result.get("profiling_greedy_complete_calls", 0)
+            )
+            self.profiling_greedy_complete_sec_ = float(
+                cpp_result.get("profiling_greedy_complete_sec", 0.0)
+            )
+            self.profiling_greedy_complete_calls_by_depth_ = list(
+                cpp_result.get("profiling_greedy_complete_calls_by_depth", [])
+            )
+            self.profiling_feature_prepare_sec_ = float(
+                cpp_result.get("profiling_feature_prepare_sec", 0.0)
+            )
+            self.profiling_candidate_nomination_sec_ = float(
+                cpp_result.get("profiling_candidate_nomination_sec", 0.0)
+            )
+            self.profiling_candidate_shortlist_sec_ = float(
+                cpp_result.get("profiling_candidate_shortlist_sec", 0.0)
+            )
+            self.profiling_candidate_generation_sec_ = float(
+                cpp_result.get("profiling_candidate_generation_sec", 0.0)
+            )
+            self.profiling_recursive_child_eval_sec_ = float(
+                cpp_result.get("profiling_recursive_child_eval_sec", 0.0)
+            )
+            self.heuristic_selector_nodes_ = int(cpp_result.get("heuristic_selector_nodes", 0))
+            self.heuristic_selector_candidate_total_ = int(
+                cpp_result.get("heuristic_selector_candidate_total", 0)
+            )
+            self.heuristic_selector_candidate_pruned_total_ = int(
+                cpp_result.get("heuristic_selector_candidate_pruned_total", 0)
+            )
+            self.heuristic_selector_survivor_total_ = int(
+                cpp_result.get("heuristic_selector_survivor_total", 0)
+            )
+            self.heuristic_selector_leaf_optimal_nodes_ = int(
+                cpp_result.get("heuristic_selector_leaf_optimal_nodes", 0)
+            )
+            self.heuristic_selector_improving_split_nodes_ = int(
+                cpp_result.get("heuristic_selector_improving_split_nodes", 0)
+            )
+            self.heuristic_selector_improving_split_retained_nodes_ = int(
+                cpp_result.get("heuristic_selector_improving_split_retained_nodes", 0)
+            )
+            self.heuristic_selector_improving_split_margin_sum_ = float(
+                cpp_result.get("heuristic_selector_improving_split_margin_sum", 0.0)
+            )
+            self.heuristic_selector_improving_split_margin_max_ = float(
+                cpp_result.get("heuristic_selector_improving_split_margin_max", 0.0)
+            )
+            self.profiling_refine_calls_ = int(cpp_result.get("profiling_refine_calls", 0))
+            self.profiling_refine_sec_ = float(cpp_result.get("profiling_refine_sec", 0.0))
             self.exact_internal_nodes_ = int(cpp_result.get("exact_internal_nodes", 0))
             self.greedy_internal_nodes_ = int(cpp_result.get("greedy_internal_nodes", 0))
             self.dp_subproblem_calls_ = int(cpp_result.get("dp_subproblem_calls", 0))
@@ -253,12 +424,60 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
             self.dp_cache_bucket_entries_scanned_ = int(cpp_result.get("dp_cache_bucket_entries_scanned", 0))
             self.dp_cache_bucket_max_size_ = int(cpp_result.get("dp_cache_bucket_max_size", 0))
             self.greedy_subproblem_calls_ = int(cpp_result.get("greedy_subproblem_calls", 0))
+            self.exact_dp_subproblem_calls_above_lookahead_ = int(
+                cpp_result.get("exact_dp_subproblem_calls_above_lookahead", 0)
+            )
             self.greedy_cache_hits_ = int(cpp_result.get("greedy_cache_hits", 0))
             self.greedy_unique_states_ = int(cpp_result.get("greedy_unique_states", 0))
             self.greedy_cache_entries_peak_ = int(cpp_result.get("greedy_cache_entries_peak", 0))
             self.greedy_cache_clears_ = int(cpp_result.get("greedy_cache_clears", 0))
             self.dp_interval_evals_ = int(cpp_result.get("dp_interval_evals", 0))
             self.greedy_interval_evals_ = int(cpp_result.get("greedy_interval_evals", 0))
+            self.prism_rollout_calls_ = int(cpp_result.get("prism_rollout_calls", 0))
+            self.prism_exact_calls_ = int(cpp_result.get("prism_exact_calls", 0))
+            self.prism_rollout_candidate_evals_ = int(
+                cpp_result.get("prism_rollout_candidate_evals", 0)
+            )
+            self.prism_exact_candidate_evals_ = int(
+                cpp_result.get("prism_exact_candidate_evals", 0)
+            )
+            self.prism_shortlist_states_ = int(cpp_result.get("prism_shortlist_states", 0))
+            self.prism_shortlist_candidates_ = int(
+                cpp_result.get("prism_shortlist_candidates", 0)
+            )
+            self.prism_rollout_cache_hits_ = int(cpp_result.get("prism_rollout_cache_hits", 0))
+            self.prism_rollout_cache_entries_peak_ = int(
+                cpp_result.get("prism_rollout_cache_entries_peak", 0)
+            )
+            self.prism_rollout_cache_bytes_peak_ = int(
+                cpp_result.get("prism_rollout_cache_bytes_peak", 0)
+            )
+            self.prism_exact_cache_hits_ = int(cpp_result.get("prism_exact_cache_hits", 0))
+            self.prism_exact_cache_entries_peak_ = int(
+                cpp_result.get("prism_exact_cache_entries_peak", 0)
+            )
+            self.prism_exact_cache_bytes_peak_ = int(
+                cpp_result.get("prism_exact_cache_bytes_peak", 0)
+            )
+            self.prism_rollout_sec_ = float(cpp_result.get("prism_rollout_sec", 0.0))
+            self.prism_exact_sec_ = float(cpp_result.get("prism_exact_sec", 0.0))
+            self.prism_child_state_profiled_nodes_ = int(
+                cpp_result.get("prism_child_state_profiled_nodes", 0)
+            )
+            self.prism_child_state_edges_ = int(cpp_result.get("prism_child_state_edges", 0))
+            self.prism_child_state_unique_ = int(cpp_result.get("prism_child_state_unique", 0))
+            self.prism_child_state_duplicate_edges_ = int(
+                cpp_result.get("prism_child_state_duplicate_edges", 0)
+            )
+            self.prism_child_state_multiuse_states_ = int(
+                cpp_result.get("prism_child_state_multiuse_states", 0)
+            )
+            self.prism_child_state_max_uses_peak_ = int(
+                cpp_result.get("prism_child_state_max_uses_peak", 0)
+            )
+            self.prism_child_state_use_histogram_ = list(
+                cpp_result.get("prism_child_state_use_histogram", [])
+            )
             self.rush_incumbent_feature_aborts_ = int(cpp_result.get("rush_incumbent_feature_aborts", 0))
             self.rush_total_time_sec_ = float(cpp_result.get("rush_total_time_sec", 0.0))
             self.rush_refinement_child_time_sec_ = 0.0
@@ -313,214 +532,6 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
             )
             self.expensive_child_exactify_sec_ = float(
                 cpp_result.get("expensive_child_exactify_sec", 0.0)
-            )
-            self.approx_mode_enabled_ = int(cpp_result.get("approx_mode_enabled", 0))
-            self.approx_ref_shortlist_enabled_ = int(
-                cpp_result.get("approx_ref_shortlist_enabled", 0)
-            )
-            self.approx_challenger_sweep_enabled_ = int(
-                cpp_result.get("approx_challenger_sweep_enabled", 0)
-            )
-            self.approx_lhat_computed_ = int(cpp_result.get("approx_lhat_computed", 0))
-            self.approx_greedy_patch_calls_ = int(cpp_result.get("approx_greedy_patch_calls", 0))
-            self.approx_greedy_patches_applied_ = int(cpp_result.get("approx_greedy_patches_applied", 0))
-            self.approx_greedy_ub_updates_total_ = int(
-                cpp_result.get("approx_greedy_ub_updates_total", 0)
-            )
-            self.approx_greedy_patch_sec_ = float(cpp_result.get("approx_greedy_patch_sec", 0.0))
-            self.approx_exactify_triggered_nodes_ = int(cpp_result.get("approx_exactify_triggered_nodes", 0))
-            self.approx_exactify_features_exact_solved_ = int(
-                cpp_result.get("approx_exactify_features_exact_solved", 0)
-            )
-            self.approx_exactify_stops_by_separation_ = int(
-                cpp_result.get("approx_exactify_stops_by_separation", 0)
-            )
-            self.approx_exactify_stops_by_cap_ = int(
-                cpp_result.get("approx_exactify_stops_by_cap", 0)
-            )
-            self.approx_exactify_stops_by_ambiguous_empty_ = int(
-                cpp_result.get("approx_exactify_stops_by_ambiguous_empty", 0)
-            )
-            self.approx_exactify_stops_by_no_improve_ = int(
-                cpp_result.get("approx_exactify_stops_by_no_improve", 0)
-            )
-            self.approx_exactify_stops_by_separation_depth0_ = int(
-                cpp_result.get("approx_exactify_stops_by_separation_depth0", 0)
-            )
-            self.approx_exactify_stops_by_separation_depth1_ = int(
-                cpp_result.get("approx_exactify_stops_by_separation_depth1", 0)
-            )
-            self.approx_exactify_stops_by_cap_depth0_ = int(
-                cpp_result.get("approx_exactify_stops_by_cap_depth0", 0)
-            )
-            self.approx_exactify_stops_by_cap_depth1_ = int(
-                cpp_result.get("approx_exactify_stops_by_cap_depth1", 0)
-            )
-            self.approx_exactify_features_exact_solved_depth0_ = int(
-                cpp_result.get("approx_exactify_features_exact_solved_depth0", 0)
-            )
-            self.approx_exactify_features_exact_solved_depth1_ = int(
-                cpp_result.get("approx_exactify_features_exact_solved_depth1", 0)
-            )
-            self.approx_exactify_set_size_depth0_min_ = int(
-                cpp_result.get("approx_exactify_set_size_depth0_min", 0)
-            )
-            self.approx_exactify_set_size_depth0_mean_ = float(
-                cpp_result.get("approx_exactify_set_size_depth0_mean", 0.0)
-            )
-            self.approx_exactify_set_size_depth0_max_ = int(
-                cpp_result.get("approx_exactify_set_size_depth0_max", 0)
-            )
-            self.approx_exactify_set_size_depth1_min_ = int(
-                cpp_result.get("approx_exactify_set_size_depth1_min", 0)
-            )
-            self.approx_exactify_set_size_depth1_mean_ = float(
-                cpp_result.get("approx_exactify_set_size_depth1_mean", 0.0)
-            )
-            self.approx_exactify_set_size_depth1_max_ = int(
-                cpp_result.get("approx_exactify_set_size_depth1_max", 0)
-            )
-            self.approx_exactify_avg_features_per_triggered_node_ = float(
-                cpp_result.get("approx_exactify_avg_features_per_triggered_node", 0.0)
-            )
-            self.approx_exactify_ambiguous_set_size_min_ = float(
-                cpp_result.get("approx_exactify_ambiguous_set_size_min", 0.0)
-            )
-            self.approx_exactify_ambiguous_set_size_mean_ = float(
-                cpp_result.get("approx_exactify_ambiguous_set_size_mean", 0.0)
-            )
-            self.approx_exactify_ambiguous_set_size_max_ = int(
-                cpp_result.get("approx_exactify_ambiguous_set_size_max", 0)
-            )
-            self.approx_exactify_ambiguous_set_shrank_steps_ = int(
-                cpp_result.get("approx_exactify_ambiguous_set_shrank_steps", 0)
-            )
-            self.approx_exactify_cap_effective_depth0_ = float(
-                cpp_result.get("approx_exactify_cap_effective_depth0", 0.0)
-            )
-            self.approx_exactify_cap_effective_depth1_ = float(
-                cpp_result.get("approx_exactify_cap_effective_depth1", 0.0)
-            )
-            self.approx_challenger_sweep_invocations_ = int(
-                cpp_result.get("approx_challenger_sweep_invocations", 0)
-            )
-            self.approx_challenger_sweep_features_processed_ = int(
-                cpp_result.get("approx_challenger_sweep_features_processed", 0)
-            )
-            self.approx_challenger_sweep_sec_ = float(
-                cpp_result.get("approx_challenger_sweep_sec", 0.0)
-            )
-            self.approx_challenger_sweep_skipped_large_ambiguous_ = int(
-                cpp_result.get("approx_challenger_sweep_skipped_large_ambiguous", 0)
-            )
-            self.approx_challenger_sweep_patch_cap_hit_ = int(
-                cpp_result.get("approx_challenger_sweep_patch_cap_hit", 0)
-            )
-            self.approx_uncertainty_triggered_nodes_ = int(
-                cpp_result.get("approx_uncertainty_triggered_nodes", 0)
-            )
-            self.approx_exactify_trigger_rate_depth0_ = float(
-                cpp_result.get("approx_exactify_trigger_rate_depth0", 0.0)
-            )
-            self.approx_exactify_trigger_rate_depth1_ = float(
-                cpp_result.get("approx_exactify_trigger_rate_depth1", 0.0)
-            )
-            self.approx_uncertainty_trigger_rate_depth0_ = float(
-                cpp_result.get("approx_uncertainty_trigger_rate_depth0", 0.0)
-            )
-            self.approx_uncertainty_trigger_rate_depth1_ = float(
-                cpp_result.get("approx_uncertainty_trigger_rate_depth1", 0.0)
-            )
-            self.approx_eligible_nodes_depth0_ = int(cpp_result.get("approx_eligible_nodes_depth0", 0))
-            self.approx_eligible_nodes_depth1_ = int(cpp_result.get("approx_eligible_nodes_depth1", 0))
-            self.approx_exactify_triggered_nodes_depth0_ = int(
-                cpp_result.get("approx_exactify_triggered_nodes_depth0", 0)
-            )
-            self.approx_exactify_triggered_nodes_depth1_ = int(
-                cpp_result.get("approx_exactify_triggered_nodes_depth1", 0)
-            )
-            self.approx_uncertainty_triggered_nodes_depth0_ = int(
-                cpp_result.get("approx_uncertainty_triggered_nodes_depth0", 0)
-            )
-            self.approx_uncertainty_triggered_nodes_depth1_ = int(
-                cpp_result.get("approx_uncertainty_triggered_nodes_depth1", 0)
-            )
-            self.approx_pub_unrefined_cells_on_pub_total_ = int(
-                cpp_result.get("approx_pub_unrefined_cells_on_pub_total", 0)
-            )
-            self.approx_pub_patchable_cells_total_ = int(
-                cpp_result.get("approx_pub_patchable_cells_total", 0)
-            )
-            self.approx_pub_cells_skipped_by_childrows_ = int(
-                cpp_result.get("approx_pub_cells_skipped_by_childrows", 0)
-            )
-            self.approx_nodes_with_patchable_pub_ = int(
-                cpp_result.get("approx_nodes_with_patchable_pub", 0)
-            )
-            self.approx_nodes_with_patch_calls_ = int(
-                cpp_result.get("approx_nodes_with_patch_calls", 0)
-            )
-            self.approx_patch_cell_cache_hits_ = int(
-                cpp_result.get("approx_patch_cell_cache_hits", 0)
-            )
-            self.approx_patch_cell_cache_misses_ = int(
-                cpp_result.get("approx_patch_cell_cache_misses", 0)
-            )
-            self.approx_patch_cache_hit_updates_ = int(
-                cpp_result.get("approx_patch_cache_hit_updates", 0)
-            )
-            self.approx_patch_cache_miss_oracle_calls_ = int(
-                cpp_result.get("approx_patch_cache_miss_oracle_calls", 0)
-            )
-            self.approx_patch_subset_materializations_ = int(
-                cpp_result.get("approx_patch_subset_materializations", 0)
-            )
-            self.approx_patch_skipped_already_tight_ = int(
-                cpp_result.get("approx_patch_skipped_already_tight", 0)
-            )
-            self.approx_patch_skipped_no_possible_improve_ = int(
-                cpp_result.get("approx_patch_skipped_no_possible_improve", 0)
-            )
-            self.approx_patch_skipped_cached_ = int(
-                cpp_result.get("approx_patch_skipped_cached", 0)
-            )
-            self.approx_patch_budget_effective_min_ = int(
-                cpp_result.get("approx_patch_budget_effective_min", 0)
-            )
-            self.approx_patch_budget_effective_avg_ = float(
-                cpp_result.get("approx_patch_budget_effective_avg", 0.0)
-            )
-            self.approx_patch_budget_effective_max_ = int(
-                cpp_result.get("approx_patch_budget_effective_max", 0)
-            )
-            self.approx_ref_neff_mean_ = float(cpp_result.get("approx_ref_neff_mean", 0.0))
-            self.approx_ref_neff_max_ = float(cpp_result.get("approx_ref_neff_max", 0.0))
-            self.approx_ref_k0_min_ = int(cpp_result.get("approx_ref_k0_min", 0))
-            self.approx_ref_k0_mean_ = float(cpp_result.get("approx_ref_k0_mean", 0.0))
-            self.approx_ref_k0_max_ = int(cpp_result.get("approx_ref_k0_max", 0))
-            self.approx_ref_k_final_min_ = int(cpp_result.get("approx_ref_k_final_min", 0))
-            self.approx_ref_k_final_mean_ = float(cpp_result.get("approx_ref_k_final_mean", 0.0))
-            self.approx_ref_k_final_max_ = int(cpp_result.get("approx_ref_k_final_max", 0))
-            self.approx_ref_k_depth0_mean_ = float(cpp_result.get("approx_ref_k_depth0_mean", 0.0))
-            self.approx_ref_k_depth1_mean_ = float(cpp_result.get("approx_ref_k_depth1_mean", 0.0))
-            self.approx_ref_widen_count_ = int(cpp_result.get("approx_ref_widen_count", 0))
-            self.approx_ref_widen_count_depth0_ = int(
-                cpp_result.get("approx_ref_widen_count_depth0", 0)
-            )
-            self.approx_ref_widen_count_depth1_ = int(
-                cpp_result.get("approx_ref_widen_count_depth1", 0)
-            )
-            self.approx_ref_chosen_feature_rank_depth0_ = float(
-                cpp_result.get("approx_ref_chosen_feature_rank_depth0", 0.0)
-            )
-            self.approx_ref_chosen_feature_rank_depth1_ = float(
-                cpp_result.get("approx_ref_chosen_feature_rank_depth1", 0.0)
-            )
-            self.approx_ref_chosen_in_initial_shortlist_rate_depth0_ = float(
-                cpp_result.get("approx_ref_chosen_in_initial_shortlist_rate_depth0", 0.0)
-            )
-            self.approx_ref_chosen_in_initial_shortlist_rate_depth1_ = float(
-                cpp_result.get("approx_ref_chosen_in_initial_shortlist_rate_depth1", 0.0)
             )
             self.fast100_exactify_nodes_allowed_ = int(
                 cpp_result.get("fast100_exactify_nodes_allowed", 0)
@@ -687,6 +698,7 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
             self.dp_cache_depth_match_candidates_ = 0
             self.dp_cache_bucket_entries_scanned_ = 0
             self.dp_cache_bucket_max_size_ = 0
+            self.exact_dp_subproblem_calls_above_lookahead_ = 0
             self.greedy_subproblem_calls_ = int(len(self._greedy_cache))
             self.greedy_cache_hits_ = 0
             self.greedy_unique_states_ = int(len(self._greedy_cache))
@@ -694,6 +706,73 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
             self.greedy_cache_clears_ = 0
             self.dp_interval_evals_ = 0
             self.greedy_interval_evals_ = 0
+            self.prism_rollout_calls_ = 0
+            self.prism_exact_calls_ = 0
+            self.prism_rollout_candidate_evals_ = 0
+            self.prism_exact_candidate_evals_ = 0
+            self.prism_shortlist_states_ = 0
+            self.prism_shortlist_candidates_ = 0
+            self.prism_rollout_cache_hits_ = 0
+            self.prism_rollout_cache_entries_peak_ = 0
+            self.prism_rollout_cache_bytes_peak_ = 0
+            self.prism_exact_cache_hits_ = 0
+            self.prism_exact_cache_entries_peak_ = 0
+            self.prism_exact_cache_bytes_peak_ = 0
+            self.prism_rollout_sec_ = 0.0
+            self.prism_exact_sec_ = 0.0
+            self.prism_child_state_profiled_nodes_ = 0
+            self.prism_child_state_edges_ = 0
+            self.prism_child_state_unique_ = 0
+            self.prism_child_state_duplicate_edges_ = 0
+            self.prism_child_state_multiuse_states_ = 0
+            self.prism_child_state_max_uses_peak_ = 0
+            self.prism_child_state_use_histogram_ = []
+            self.profiling_lp_solve_calls_ = 0
+            self.profiling_lp_solve_sec_ = 0.0
+            self.profiling_pricing_calls_ = 0
+            self.profiling_pricing_sec_ = 0.0
+            self.profiling_greedy_complete_calls_ = 0
+            self.profiling_greedy_complete_sec_ = 0.0
+            self.profiling_greedy_complete_calls_by_depth_ = []
+            self.profiling_feature_prepare_sec_ = 0.0
+            self.profiling_candidate_nomination_sec_ = 0.0
+            self.profiling_candidate_shortlist_sec_ = 0.0
+            self.profiling_candidate_generation_sec_ = 0.0
+            self.profiling_recursive_child_eval_sec_ = 0.0
+            self.heuristic_selector_nodes_ = 0
+            self.heuristic_selector_candidate_total_ = 0
+            self.heuristic_selector_candidate_pruned_total_ = 0
+            self.heuristic_selector_survivor_total_ = 0
+            self.heuristic_selector_leaf_optimal_nodes_ = 0
+            self.heuristic_selector_improving_split_nodes_ = 0
+            self.heuristic_selector_improving_split_retained_nodes_ = 0
+            self.heuristic_selector_improving_split_margin_sum_ = 0.0
+            self.heuristic_selector_improving_split_margin_max_ = 0.0
+            self.profiling_refine_calls_ = 0
+            self.profiling_refine_sec_ = 0.0
+            self.nominee_unique_total_ = 0
+            self.nominee_child_interval_lookups_ = 0
+            self.nominee_child_interval_unique_ = 0
+            self.nominee_exactified_total_ = 0
+            self.nominee_incumbent_updates_ = 0
+            self.nominee_threatening_samples_ = 0
+            self.nominee_threatening_sum_ = 0.0
+            self.nominee_threatening_max_ = 0
+            self.atomized_feature_atom_count_histogram_ = []
+            self.atomized_feature_block_atom_count_histogram_ = []
+            self.atomized_feature_q_effective_histogram_ = []
+            self.greedy_feature_preserved_histogram_ = []
+            self.greedy_candidate_count_histogram_ = []
+            self.greedy_feature_survivor_histogram_ = []
+            self.per_node_prepared_features_ = []
+            self.per_node_candidate_count_ = []
+            self.per_node_total_weight_ = []
+            self.per_node_mu_node_ = []
+            self.per_node_candidate_upper_bounds_ = []
+            self.per_node_candidate_lower_bounds_ = []
+            self.nominee_elbow_prefix_total_ = 0
+            self.nominee_elbow_prefix_max_ = 0
+            self.nominee_elbow_prefix_histogram_ = []
             self.rush_incumbent_feature_aborts_ = 0
             self.rush_total_time_sec_ = 0.0
             self.rush_refinement_child_time_sec_ = 0.0
@@ -721,88 +800,6 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
             self.expensive_child_sec_ = 0.0
             self.expensive_child_exactify_calls_ = 0
             self.expensive_child_exactify_sec_ = 0.0
-            self.approx_mode_enabled_ = int(bool(self.approx_mode))
-            self.approx_ref_shortlist_enabled_ = int(bool(self.approx_ref_shortlist_enabled))
-            self.approx_challenger_sweep_enabled_ = int(bool(self.approx_challenger_sweep_enabled))
-            self.approx_lhat_computed_ = 0
-            self.approx_greedy_patch_calls_ = 0
-            self.approx_greedy_patches_applied_ = 0
-            self.approx_greedy_ub_updates_total_ = 0
-            self.approx_greedy_patch_sec_ = 0.0
-            self.approx_exactify_triggered_nodes_ = 0
-            self.approx_exactify_features_exact_solved_ = 0
-            self.approx_exactify_stops_by_separation_ = 0
-            self.approx_exactify_stops_by_cap_ = 0
-            self.approx_exactify_stops_by_ambiguous_empty_ = 0
-            self.approx_exactify_stops_by_no_improve_ = 0
-            self.approx_exactify_stops_by_separation_depth0_ = 0
-            self.approx_exactify_stops_by_separation_depth1_ = 0
-            self.approx_exactify_stops_by_cap_depth0_ = 0
-            self.approx_exactify_stops_by_cap_depth1_ = 0
-            self.approx_exactify_features_exact_solved_depth0_ = 0
-            self.approx_exactify_features_exact_solved_depth1_ = 0
-            self.approx_exactify_set_size_depth0_min_ = 0
-            self.approx_exactify_set_size_depth0_mean_ = 0.0
-            self.approx_exactify_set_size_depth0_max_ = 0
-            self.approx_exactify_set_size_depth1_min_ = 0
-            self.approx_exactify_set_size_depth1_mean_ = 0.0
-            self.approx_exactify_set_size_depth1_max_ = 0
-            self.approx_exactify_avg_features_per_triggered_node_ = 0.0
-            self.approx_exactify_ambiguous_set_size_min_ = 0.0
-            self.approx_exactify_ambiguous_set_size_mean_ = 0.0
-            self.approx_exactify_ambiguous_set_size_max_ = 0
-            self.approx_exactify_ambiguous_set_shrank_steps_ = 0
-            self.approx_exactify_cap_effective_depth0_ = 0.0
-            self.approx_exactify_cap_effective_depth1_ = 0.0
-            self.approx_challenger_sweep_invocations_ = 0
-            self.approx_challenger_sweep_features_processed_ = 0
-            self.approx_challenger_sweep_sec_ = 0.0
-            self.approx_challenger_sweep_skipped_large_ambiguous_ = 0
-            self.approx_challenger_sweep_patch_cap_hit_ = 0
-            self.approx_uncertainty_triggered_nodes_ = 0
-            self.approx_exactify_trigger_rate_depth0_ = 0.0
-            self.approx_exactify_trigger_rate_depth1_ = 0.0
-            self.approx_uncertainty_trigger_rate_depth0_ = 0.0
-            self.approx_uncertainty_trigger_rate_depth1_ = 0.0
-            self.approx_eligible_nodes_depth0_ = 0
-            self.approx_eligible_nodes_depth1_ = 0
-            self.approx_exactify_triggered_nodes_depth0_ = 0
-            self.approx_exactify_triggered_nodes_depth1_ = 0
-            self.approx_uncertainty_triggered_nodes_depth0_ = 0
-            self.approx_uncertainty_triggered_nodes_depth1_ = 0
-            self.approx_pub_unrefined_cells_on_pub_total_ = 0
-            self.approx_pub_patchable_cells_total_ = 0
-            self.approx_pub_cells_skipped_by_childrows_ = 0
-            self.approx_nodes_with_patchable_pub_ = 0
-            self.approx_nodes_with_patch_calls_ = 0
-            self.approx_patch_cell_cache_hits_ = 0
-            self.approx_patch_cell_cache_misses_ = 0
-            self.approx_patch_cache_hit_updates_ = 0
-            self.approx_patch_cache_miss_oracle_calls_ = 0
-            self.approx_patch_subset_materializations_ = 0
-            self.approx_patch_skipped_already_tight_ = 0
-            self.approx_patch_skipped_no_possible_improve_ = 0
-            self.approx_patch_skipped_cached_ = 0
-            self.approx_patch_budget_effective_min_ = 0
-            self.approx_patch_budget_effective_avg_ = 0.0
-            self.approx_patch_budget_effective_max_ = 0
-            self.approx_ref_neff_mean_ = 0.0
-            self.approx_ref_neff_max_ = 0.0
-            self.approx_ref_k0_min_ = 0
-            self.approx_ref_k0_mean_ = 0.0
-            self.approx_ref_k0_max_ = 0
-            self.approx_ref_k_final_min_ = 0
-            self.approx_ref_k_final_mean_ = 0.0
-            self.approx_ref_k_final_max_ = 0
-            self.approx_ref_k_depth0_mean_ = 0.0
-            self.approx_ref_k_depth1_mean_ = 0.0
-            self.approx_ref_widen_count_ = 0
-            self.approx_ref_widen_count_depth0_ = 0
-            self.approx_ref_widen_count_depth1_ = 0
-            self.approx_ref_chosen_feature_rank_depth0_ = 0.0
-            self.approx_ref_chosen_feature_rank_depth1_ = 0.0
-            self.approx_ref_chosen_in_initial_shortlist_rate_depth0_ = 0.0
-            self.approx_ref_chosen_in_initial_shortlist_rate_depth1_ = 0.0
             self.fast100_exactify_nodes_allowed_ = 0
             self.fast100_exactify_nodes_skipped_small_support_ = 0
             self.fast100_exactify_nodes_skipped_dominant_gain_ = 0
@@ -860,26 +857,22 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
 
     def predict(self, X):
         check_is_fitted(self, ["tree_", "classes_"])
-        Z = self._prepare_features_for_predict(X)
+        Z = check_array(X, ensure_2d=True, dtype=None)
+        if not np.issubdtype(np.asarray(Z).dtype, np.integer):
+            raise ValueError("MSPLIT expects LightGBM-binned integer features")
+        Z = np.asarray(Z, dtype=np.int32)
+        if (Z < 0).any():
+            raise ValueError("Binned input must be non-negative integer values")
         preds = np.zeros(Z.shape[0], dtype=np.int32)
         for i in range(Z.shape[0]):
             preds[i] = self._predict_row(Z[i], self.tree_)
         return self.classes_[preds]
 
-    def _prepare_features_for_predict(self, X) -> np.ndarray:
-        if self.input_is_binned:
-            Z = check_array(X, ensure_2d=True, dtype=np.int32)
-            if (Z < 0).any():
-                raise ValueError("Binned input must be non-negative integer values")
-            return Z
-
-        X_processed = self._transform_preprocessor(X)
-        return self.binner_.transform(X_processed)
-
     def _predict_row(self, row: np.ndarray, node: Union[MultiNode, MultiLeaf]) -> int:
         cur = node
         while isinstance(cur, MultiNode):
-            bin_id = int(row[cur.feature])
+            feature_index = self._resolve_feature_index(cur.feature, row.shape[0])
+            bin_id = int(row[feature_index])
             child = None
             for group_id in sorted(cur.children.keys()):
                 spans = cur.child_spans.get(group_id, ())
@@ -932,8 +925,29 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
             cur = child
         return cur.prediction
 
+    def _resolve_feature_index(self, feature_index: int, row_width: int) -> int:
+        feature_index = int(feature_index)
+        row_width = int(row_width)
+        if row_width <= 0:
+            raise ValueError("Cannot predict on an empty feature row")
+        if 0 <= feature_index < row_width:
+            return feature_index
+        if feature_index == row_width:
+            warnings.warn(
+                f"MSPLIT tree feature index {feature_index} matched the row width; "
+                f"clamping to the last available feature {row_width - 1}.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            return row_width - 1
+        raise IndexError(
+            f"MSPLIT tree feature index {feature_index} is out of bounds for input width {row_width}"
+        )
+
     def _solve_subproblem(self, indices: np.ndarray, depth_remaining: int, current_depth: int) -> BoundResult:
         self._check_timeout()
+        if current_depth < self.effective_lookahead_depth_:
+            self.exact_dp_subproblem_calls_above_lookahead_ += 1
         canonical_indices = np.sort(indices, kind="mergesort")
         key = (canonical_indices.tobytes(), depth_remaining)
         cached = self._dp_cache.get(key)
@@ -983,9 +997,6 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
                     largest_size = int(child_indices.size)
                     largest_bin = int(bin_id)
 
-            split_penalty = self.branch_penalty * (len(children) - 2)
-            split_lb += split_penalty
-            split_ub += split_penalty
             best_lb = min(best_lb, split_lb)
             if split_ub < best_ub:
                 best_ub = split_ub
@@ -1047,7 +1058,6 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
                     largest_size = int(child_indices.size)
                     largest_bin = int(bin_id)
 
-            split_objective += self.branch_penalty * (len(children) - 2)
             if split_objective < best_objective:
                 best_objective = split_objective
                 best_tree = MultiNode(
@@ -1197,59 +1207,6 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
         )
         return y_bin, labels
 
-    def _fit_and_transform_preprocessor(self, X) -> Tuple[np.ndarray, list[str]]:
-        if hasattr(X, "select_dtypes") and hasattr(X, "columns"):
-            numeric_cols = list(X.select_dtypes(include=[np.number]).columns)
-            categorical_cols = [col for col in X.columns if col not in numeric_cols]
-
-            transformers = []
-            if numeric_cols:
-                transformers.append(
-                    (
-                        "num",
-                        Pipeline([("imputer", SimpleImputer(strategy="median"))]),
-                        numeric_cols,
-                    )
-                )
-            if categorical_cols:
-                try:
-                    ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
-                except TypeError:
-                    ohe = OneHotEncoder(handle_unknown="ignore", sparse=False)
-                transformers.append(
-                    (
-                        "cat",
-                        Pipeline(
-                            [
-                                ("imputer", SimpleImputer(strategy="most_frequent")),
-                                ("onehot", ohe),
-                            ]
-                        ),
-                        categorical_cols,
-                    )
-                )
-
-            self.preprocessor_ = ColumnTransformer(transformers=transformers, remainder="drop")
-            X_processed = self.preprocessor_.fit_transform(X)
-            feature_names = self.preprocessor_.get_feature_names_out().tolist()
-            return np.asarray(X_processed, dtype=float), feature_names
-
-        self.preprocessor_ = Pipeline([("imputer", SimpleImputer(strategy="median"))])
-        X_arr = check_array(X, ensure_2d=True, dtype=float, force_all_finite="allow-nan")
-        X_processed = self.preprocessor_.fit_transform(X_arr)
-        feature_names = [f"x{i}" for i in range(X_processed.shape[1])]
-        return np.asarray(X_processed, dtype=float), feature_names
-
-    def _transform_preprocessor(self, X) -> np.ndarray:
-        if self.preprocessor_ is None:
-            raise RuntimeError("Preprocessor is not available; model was fit with input_is_binned=True")
-
-        if hasattr(X, "select_dtypes") and hasattr(X, "columns"):
-            X_processed = self.preprocessor_.transform(X)
-        else:
-            X_arr = check_array(X, ensure_2d=True, dtype=float, force_all_finite="allow-nan")
-            X_processed = self.preprocessor_.transform(X_arr)
-        return np.asarray(X_processed, dtype=float)
 
     def _format_tree(self, node: Union[MultiNode, MultiLeaf], depth: int = 0) -> str:
         indent = "  " * depth

@@ -79,12 +79,41 @@ def _format_numeric_union(spans: List[Tuple[int, int]], edges: np.ndarray) -> st
     return " U ".join(parts)
 
 
+def _format_discrete_union(spans: List[Tuple[int, int]]) -> str:
+    parts: List[str] = []
+    for start_bin, end_bin in spans:
+        if start_bin == end_bin:
+            parts.append(f"= {int(start_bin)}")
+        else:
+            parts.append(f"[{int(start_bin)}, {int(end_bin)}]")
+    return " U ".join(parts) if parts else "all"
+
+
 def _is_binary_onehot_feature(feature_name: str, edges: np.ndarray) -> bool:
     if not feature_name.startswith("cat__"):
         return False
     if edges is None or len(edges) != 1:
         return False
     return abs(float(edges[0]) - 0.5) < 1e-6
+
+
+def _resolve_matrix_feature_index(feature_idx: int, matrix_width: int) -> int:
+    feature_idx = int(feature_idx)
+    matrix_width = int(matrix_width)
+    if matrix_width <= 0:
+        raise ValueError("Cannot index an empty matrix")
+    if 0 <= feature_idx < matrix_width:
+        return feature_idx
+    if feature_idx == matrix_width:
+        return matrix_width - 1
+    raise IndexError(f"feature index {feature_idx} is out of bounds for axis 1 with size {matrix_width}")
+
+
+def _get_binner_feature_edges(binner) -> List[Optional[np.ndarray]]:
+    edges = getattr(binner, "bin_edges_per_feature", None)
+    if edges is None:
+        return []
+    return list(edges)
 
 
 def _parse_onehot_name(feature_name: str) -> Tuple[str, str]:
@@ -102,7 +131,10 @@ def format_msplit_condition(feature_idx: int, bins: Iterable[int], binner, featu
     if len(bins_list) >= 2:
         # Merge gaps from unseen bins so labels stay readable.
         bins_for_display = list(range(bins_list[0], bins_list[-1] + 1))
-    edges = binner.bin_edges_per_feature[feature_idx]
+    bin_edges = _get_binner_feature_edges(binner)
+    if feature_idx < 0 or feature_idx >= len(bin_edges):
+        return _format_discrete_union(_bins_to_spans(bins_for_display))
+    edges = bin_edges[feature_idx]
 
     if edges is None or len(edges) == 0:
         cond = "all"
@@ -124,7 +156,7 @@ def format_msplit_condition(feature_idx: int, bins: Iterable[int], binner, featu
 
 
 def is_leaf_node(node: object) -> bool:
-    return not hasattr(node, "children")
+    return not hasattr(node, "children") and not hasattr(node, "primary_child")
 
 
 def _expand_spans(spans: Iterable[Tuple[int, int]]) -> List[int]:
@@ -155,8 +187,17 @@ def _class_dist_from_counts(counts: Iterable[int], class_labels: np.ndarray) -> 
 def _subtree_signature(node: object) -> Tuple:
     if is_leaf_node(node):
         prediction = int(getattr(node, "prediction", 0))
-        class_counts = tuple(int(v) for v in getattr(node, "class_counts", (0, 0)))
+        class_counts = tuple(int(v) for v in getattr(node, "class_counts", ()))
         return ("leaf", prediction, class_counts)
+    if hasattr(node, "primary_child"):
+        return (
+            "pair",
+            int(getattr(node, "feature_a", -1)),
+            int(getattr(node, "feature_b", -1)),
+            _subtree_signature(getattr(node, "primary_child")),
+            _subtree_signature(getattr(node, "secondary_child")),
+            _subtree_signature(getattr(node, "else_child")),
+        )
     child_sigs = tuple(
         (
             tuple(int(b) for b in bins),
@@ -169,6 +210,8 @@ def _subtree_signature(node: object) -> Tuple:
 
 def group_children(node: object) -> List[Tuple[List[int], object]]:
     if is_leaf_node(node):
+        return []
+    if hasattr(node, "primary_child"):
         return []
 
     child_spans = getattr(node, "child_spans", None)
@@ -228,11 +271,95 @@ def serialize_msplit_node(
             "path_conditions": path_conditions,
         }
 
+    if hasattr(node, "primary_child"):
+        feat_a = int(node.feature_a)
+        feat_b = int(node.feature_b)
+        feat_a_name = feature_names[feat_a] if feat_a < len(feature_names) else f"x{feat_a}"
+        feat_b_name = feature_names[feat_b] if feat_b < len(feature_names) else f"x{feat_b}"
+        feat_a_display = feature_display_name(feat_a_name)
+        feat_b_display = feature_display_name(feat_b_name)
+        primary_bins = _expand_spans(getattr(node, "primary_spans", ()))
+        secondary_bins = _expand_spans(getattr(node, "secondary_spans", ()))
+        primary_values = z_train[idxs, feat_a] if (z_train is not None and idxs is not None and idxs.size > 0) else None
+        secondary_values = z_train[idxs, feat_b] if (z_train is not None and idxs is not None and idxs.size > 0) else None
+        primary_idxs = secondary_idxs = else_idxs = None
+        if primary_values is not None and secondary_values is not None:
+            primary_mask = np.isin(primary_values, np.asarray(primary_bins, dtype=np.int32))
+            residual_mask = ~primary_mask
+            secondary_mask = residual_mask & np.isin(
+                secondary_values,
+                np.asarray(secondary_bins, dtype=np.int32),
+            )
+            else_mask = residual_mask & ~secondary_mask
+            primary_idxs = idxs[primary_mask]
+            secondary_idxs = idxs[secondary_mask]
+            else_idxs = idxs[else_mask]
+        cond_primary = format_msplit_condition(feat_a, primary_bins, binner, feature_names)
+        cond_secondary = format_msplit_condition(feat_b, secondary_bins, binner, feature_names)
+        return {
+            "node_type": "pair_internal",
+            "feature_index": feat_a,
+            "feature_name": to_label_text(feat_a_name),
+            "feature_display_name": f"{feat_a_display} / {feat_b_display}",
+            "n_samples": n_samples,
+            "n_way": 3,
+            "children": [
+                {
+                    "branch": {
+                        "condition": f"{feat_a_display} {cond_primary}",
+                        "bins": [int(b) for b in primary_bins],
+                    },
+                    "child": serialize_msplit_node(
+                        node.primary_child,
+                        binner,
+                        feature_names,
+                        class_labels,
+                        z_train,
+                        primary_idxs,
+                        path_conditions + [f"{feat_a_display} {cond_primary}"],
+                    ),
+                },
+                {
+                    "branch": {
+                        "condition": f"else if {feat_b_display} {cond_secondary}",
+                        "bins": [int(b) for b in secondary_bins],
+                    },
+                    "child": serialize_msplit_node(
+                        node.secondary_child,
+                        binner,
+                        feature_names,
+                        class_labels,
+                        z_train,
+                        secondary_idxs,
+                        path_conditions + [f"else if {feat_b_display} {cond_secondary}"],
+                    ),
+                },
+                {
+                    "branch": {
+                        "condition": "else",
+                        "bins": [],
+                    },
+                    "child": serialize_msplit_node(
+                        node.else_child,
+                        binner,
+                        feature_names,
+                        class_labels,
+                        z_train,
+                        else_idxs,
+                        path_conditions + ["else"],
+                    ),
+                },
+            ],
+        }
+
     feature_idx = int(node.feature)
     feature_name = feature_names[feature_idx] if feature_idx < len(feature_names) else f"x{feature_idx}"
     feature_display = feature_display_name(feature_name)
     groups = group_children(node)
-    feature_values = z_train[idxs, feature_idx] if (z_train is not None and idxs is not None and idxs.size > 0) else None
+    feature_values = None
+    if z_train is not None and idxs is not None and idxs.size > 0:
+        matrix_feature_idx = _resolve_matrix_feature_index(feature_idx, z_train.shape[1])
+        feature_values = z_train[idxs, matrix_feature_idx]
 
     children: List[Dict[str, object]] = []
     for bins, child in groups:
@@ -288,7 +415,7 @@ def build_msplit_artifact(
     min_child_size: int,
     max_branching: int,
     reg: float,
-    branch_penalty: float,
+    branch_penalty: float | None = None,
     msplit_variant: Optional[str],
     tree_root: object,
     binner,
@@ -298,11 +425,15 @@ def build_msplit_artifact(
 ) -> Dict[str, object]:
     root_idxs = np.arange(z_train.shape[0], dtype=np.int32)
     bin_edges: List[Optional[List[float]]] = []
-    for edges in binner.bin_edges_per_feature:
-        if edges is None:
-            bin_edges.append(None)
-        else:
-            bin_edges.append([float(v) for v in np.asarray(edges).tolist()])
+    bin_edges_per_feature = _get_binner_feature_edges(binner)
+    if not bin_edges_per_feature:
+        bin_edges = [None for _ in feature_names]
+    else:
+        for edges in bin_edges_per_feature:
+            if edges is None:
+                bin_edges.append(None)
+            else:
+                bin_edges.append([float(v) for v in np.asarray(edges).tolist()])
 
     split_payload: Dict[str, object] = {
         "seed": int(seed),
@@ -331,7 +462,7 @@ def build_msplit_artifact(
             "min_child_size": int(min_child_size),
             "max_branching": int(max_branching),
             "reg": float(reg),
-            "branch_penalty": float(branch_penalty),
+            "branch_penalty": None if branch_penalty is None else float(branch_penalty),
             "msplit_variant": str(msplit_variant) if msplit_variant is not None else None,
         },
         "binner": {
@@ -365,11 +496,12 @@ def serialize_xgb_tree(
     y_train: np.ndarray,
     feature_names: List[str],
     class_labels: np.ndarray,
+    tree_index: int = 0,
 ) -> Dict[str, object]:
     tree_df = model.get_booster().trees_to_dataframe()
-    tree_df = tree_df[tree_df["Tree"] == 0].copy()
+    tree_df = tree_df[tree_df["Tree"] == int(tree_index)].copy()
     rows = {str(row["ID"]): row for _, row in tree_df.iterrows()}
-    root_id = "0-0"
+    root_id = f"{int(tree_index)}-0"
 
     children: Dict[str, Tuple[str, str]] = {}
     for node_id, row in rows.items():
@@ -416,9 +548,12 @@ def serialize_xgb_tree(
         row = rows[node_id]
         if node_id not in children:
             leaf_score = float(row["Gain"])
-            pred_idx = 1 if leaf_score >= 0.0 else 0
-            pred_label = class_labels[pred_idx] if pred_idx < len(class_labels) else pred_idx
             counts = leaf_class_counts.get(node_id, np.zeros(len(class_labels), dtype=np.int64))
+            if counts.sum() > 0:
+                pred_idx = int(np.argmax(counts))
+            else:
+                pred_idx = 1 if len(class_labels) == 2 and leaf_score >= 0.0 else 0
+            pred_label = class_labels[pred_idx] if pred_idx < len(class_labels) else pred_idx
             return {
                 "node_type": "leaf",
                 "id": node_id,
@@ -462,7 +597,7 @@ def serialize_xgb_tree(
         }
 
     return {
-        "tree_index": 0,
+        "tree_index": int(tree_index),
         "root_id": root_id,
         "tree": _build_node(root_id, []),
     }
@@ -486,6 +621,7 @@ def build_xgb_artifact(
     y_train: np.ndarray,
     train_indices: Optional[np.ndarray] = None,
     test_indices: Optional[np.ndarray] = None,
+    tree_index: int = 0,
 ) -> Dict[str, object]:
     split_payload: Dict[str, object] = {
         "seed": int(seed),
@@ -510,6 +646,7 @@ def build_xgb_artifact(
             "n_estimators": int(n_estimators),
             "learning_rate": float(learning_rate),
             "num_threads": int(num_threads),
+            "tree_index": int(tree_index),
         },
         "tree_artifact": serialize_xgb_tree(
             model,
@@ -517,5 +654,172 @@ def build_xgb_artifact(
             y_train,
             feature_names,
             class_labels=np.asarray(class_labels, dtype=object),
+            tree_index=int(tree_index),
         ),
+    }
+
+
+def _class_dist_from_probs(probs: np.ndarray, n_samples: int, class_labels: np.ndarray) -> List[Dict[str, object]]:
+    counts = np.rint(np.asarray(probs, dtype=float) * float(max(n_samples, 0))).astype(int)
+    return _class_dist_from_counts(counts.tolist(), class_labels)
+
+
+def _flatten_feature_key(key: object, feature_dict: Dict[object, List[int]]) -> List[int]:
+    if key in feature_dict:
+        return [int(v) for v in feature_dict[key]]
+    if isinstance(key, tuple):
+        out: List[int] = []
+        for part in key:
+            if part in feature_dict:
+                out.extend(int(v) for v in feature_dict[part])
+            else:
+                try:
+                    out.append(int(part))
+                except Exception:
+                    continue
+        return out
+    try:
+        return [int(key)]
+    except Exception:
+        return []
+
+
+def serialize_shapecart_node(
+    model,
+    node_idx: int,
+    feature_names: List[str],
+    class_labels: np.ndarray,
+    path_conditions: List[str],
+) -> Dict[str, object]:
+    probs = np.asarray(model.values[node_idx], dtype=float)
+    n_samples = int(model.n_samples[node_idx])
+    pred_idx = int(np.argmax(probs)) if probs.size else 0
+    pred_label = class_labels[pred_idx] if pred_idx < len(class_labels) else pred_idx
+
+    if bool(model.is_leaf[node_idx]) or model.children[node_idx] is None:
+        return {
+            "node_type": "leaf",
+            "node_index": int(node_idx),
+            "n_samples": n_samples,
+            "predicted_class_index": pred_idx,
+            "predicted_class_label": to_label_text(pred_label),
+            "true_class_dist": _class_dist_from_probs(probs, n_samples, class_labels),
+            "path_conditions": path_conditions,
+        }
+
+    node = model.nodes[node_idx]
+    feature_key = getattr(node, "final_key", None)
+    raw_feature_dict = getattr(node, "feature_dict", {}) or {}
+    selected_indices = _flatten_feature_key(feature_key, raw_feature_dict)
+    selected_names = [
+        feature_names[i] if 0 <= int(i) < len(feature_names) else f"x{int(i)}"
+        for i in selected_indices
+    ]
+    display_parts = [feature_display_name(str(name), max_len=18) for name in selected_names]
+    feature_display = " + ".join(display_parts) if display_parts else str(feature_key)
+
+    inner_tree = getattr(node, "final_tree", None)
+    inner_internal = inner_leaves = None
+    if inner_tree is not None and hasattr(inner_tree, "tree_") and hasattr(inner_tree.tree_, "children_left"):
+        children_left = np.asarray(inner_tree.tree_.children_left)
+        leaf_mask = children_left == -1
+        inner_leaves = int(np.sum(leaf_mask))
+        inner_internal = int(children_left.size - np.sum(leaf_mask))
+
+    children = []
+    child_indices = list(model.children[node_idx] or [])
+    for branch_idx, child_idx in enumerate(child_indices):
+        cond = f"group = {int(branch_idx)}"
+        children.append(
+            {
+                "branch": {"condition": cond, "branch_index": int(branch_idx)},
+                "child": serialize_shapecart_node(
+                    model,
+                    int(child_idx),
+                    feature_names,
+                    class_labels,
+                    path_conditions + [cond],
+                ),
+            }
+        )
+
+    return {
+        "node_type": "internal",
+        "node_index": int(node_idx),
+        "feature_index": int(selected_indices[0]) if selected_indices else -1,
+        "feature_name": to_label_text(selected_names[0] if selected_names else str(feature_key)),
+        "feature_display_name": feature_display,
+        "n_samples": n_samples,
+        "n_way": int(len(child_indices)),
+        "split_metadata": {
+            "selected_feature_key": to_label_text(feature_key),
+            "selected_feature_indices": [int(v) for v in selected_indices],
+            "selected_feature_names": [to_label_text(v) for v in selected_names],
+            "inner_tree_internal_nodes": inner_internal,
+            "inner_tree_leaves": inner_leaves,
+        },
+        "children": children,
+    }
+
+
+def build_shapecart_artifact(
+    *,
+    dataset: str,
+    target_name: str,
+    class_labels: np.ndarray,
+    feature_names: List[str],
+    accuracy: float,
+    seed: int,
+    test_size: float,
+    depth_budget: int,
+    k: int,
+    min_samples_leaf: int,
+    min_samples_split: int,
+    inner_min_samples_leaf: int,
+    inner_min_samples_split: int,
+    inner_max_depth: int,
+    inner_max_leaf_nodes: int,
+    max_iter: int,
+    model,
+    train_indices: Optional[np.ndarray] = None,
+    test_indices: Optional[np.ndarray] = None,
+) -> Dict[str, object]:
+    split_payload: Dict[str, object] = {
+        "seed": int(seed),
+        "test_size": float(test_size),
+    }
+    if train_indices is not None:
+        split_payload["train_indices"] = np.asarray(train_indices, dtype=int).tolist()
+    if test_indices is not None:
+        split_payload["test_indices"] = np.asarray(test_indices, dtype=int).tolist()
+
+    return {
+        "schema_version": 1,
+        "dataset": str(dataset),
+        "pipeline": "shapecart",
+        "target_name": to_label_text(target_name),
+        "class_labels": [to_label_text(v) for v in np.asarray(class_labels, dtype=object).tolist()],
+        "feature_names": [to_label_text(v) for v in feature_names],
+        "accuracy": float(accuracy),
+        "split": split_payload,
+        "model_config": {
+            "depth_budget": int(depth_budget),
+            "k": int(k),
+            "min_samples_leaf": int(min_samples_leaf),
+            "min_samples_split": int(min_samples_split),
+            "inner_min_samples_leaf": int(inner_min_samples_leaf),
+            "inner_min_samples_split": int(inner_min_samples_split),
+            "inner_max_depth": int(inner_max_depth),
+            "inner_max_leaf_nodes": int(inner_max_leaf_nodes),
+            "max_iter": int(max_iter),
+        },
+        "tree_artifact": {
+            "tree": serialize_shapecart_node(
+                model,
+                node_idx=0,
+                feature_names=feature_names,
+                class_labels=np.asarray(class_labels, dtype=object),
+                path_conditions=[],
+            )
+        },
     }

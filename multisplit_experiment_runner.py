@@ -1,4 +1,4 @@
-"""Shared runner for CART/LightGBM binned multi-split SPLIT experiments."""
+"""Shared runner for LightGBM-binned multi-split SPLIT experiments."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ SPLIT_SRC = PROJECT_ROOT / "SPLIT-ICML" / "split" / "src"
 if str(SPLIT_SRC) not in sys.path:
     sys.path.insert(0, str(SPLIT_SRC))
 
-from split import MSPLIT, SPLIT, fit_cart_binner
+from split import MSPLIT, SPLIT
 from split._binarizer import NumericBinarizer
 
 try:
@@ -97,10 +97,31 @@ SEED_COLUMNS = [
     "dp_cache_bucket_entries_scanned",
     "dp_cache_bucket_max_size",
     "greedy_subproblem_calls",
+    "profiling_greedy_complete_calls_by_depth",
     "greedy_cache_hits",
     "greedy_unique_states",
     "greedy_cache_entries_peak",
+    "greedy_cache_bytes_peak",
+    "native_n_classes",
+    "native_teacher_class_count",
+    "native_binary_mode",
+    "atomized_features_prepared",
+    "atomized_coarse_candidates",
+    "atomized_coarse_pruned_candidates",
+    "atomized_coarse_prune_rate",
+    "atomized_coarse_survivor_rate",
+    "atomized_final_candidates",
     "greedy_cache_clears",
+    "nominee_unique_total",
+    "nominee_child_interval_lookups",
+    "nominee_child_interval_unique",
+    "nominee_exactified_total",
+    "nominee_incumbent_updates",
+    "nominee_threatening_samples",
+    "nominee_threatening_sum",
+    "nominee_threatening_max",
+    "nominee_exact_child_eval_sec",
+    "nominee_debr_sec",
     "rush_total_time_sec",
     "rush_refinement_child_time_sec",
     "rush_refinement_child_time_fraction",
@@ -109,92 +130,23 @@ SEED_COLUMNS = [
     "rush_refinement_recursive_unique_states",
     "rush_refinement_depth_logs",
     "interval_refinements_attempted",
+    "debr_refine_calls",
+    "debr_refine_improved",
+    "debr_total_moves",
+    "debr_bridge_policy_calls",
+    "debr_descent_moves",
+    "debr_bridge_moves",
+    "debr_simplify_moves",
+    "debr_total_hard_gain",
+    "debr_total_soft_gain",
+    "debr_total_delta_j",
+    "debr_total_component_delta",
+    "debr_final_geo_wins",
+    "debr_final_block_wins",
     "expensive_child_calls",
     "expensive_child_sec",
     "expensive_child_exactify_calls",
     "expensive_child_exactify_sec",
-    "approx_mode_enabled",
-    "approx_ref_shortlist_enabled",
-    "approx_challenger_sweep_enabled",
-    "approx_lhat_computed",
-    "approx_greedy_patch_calls",
-    "approx_greedy_patches_applied",
-    "approx_greedy_ub_updates_total",
-    "approx_greedy_patch_sec",
-    "approx_exactify_triggered_nodes",
-    "approx_exactify_features_exact_solved",
-    "approx_exactify_stops_by_separation",
-    "approx_exactify_stops_by_cap",
-    "approx_exactify_stops_by_ambiguous_empty",
-    "approx_exactify_stops_by_no_improve",
-    "approx_exactify_stops_by_separation_depth0",
-    "approx_exactify_stops_by_separation_depth1",
-    "approx_exactify_stops_by_cap_depth0",
-    "approx_exactify_stops_by_cap_depth1",
-    "approx_exactify_features_exact_solved_depth0",
-    "approx_exactify_features_exact_solved_depth1",
-    "approx_exactify_set_size_depth0_min",
-    "approx_exactify_set_size_depth0_mean",
-    "approx_exactify_set_size_depth0_max",
-    "approx_exactify_set_size_depth1_min",
-    "approx_exactify_set_size_depth1_mean",
-    "approx_exactify_set_size_depth1_max",
-    "approx_exactify_avg_features_per_triggered_node",
-    "approx_exactify_ambiguous_set_size_min",
-    "approx_exactify_ambiguous_set_size_mean",
-    "approx_exactify_ambiguous_set_size_max",
-    "approx_exactify_ambiguous_set_shrank_steps",
-    "approx_exactify_cap_effective_depth0",
-    "approx_exactify_cap_effective_depth1",
-    "approx_challenger_sweep_invocations",
-    "approx_challenger_sweep_features_processed",
-    "approx_challenger_sweep_sec",
-    "approx_challenger_sweep_skipped_large_ambiguous",
-    "approx_challenger_sweep_patch_cap_hit",
-    "approx_uncertainty_triggered_nodes",
-    "approx_exactify_trigger_rate_depth0",
-    "approx_exactify_trigger_rate_depth1",
-    "approx_uncertainty_trigger_rate_depth0",
-    "approx_uncertainty_trigger_rate_depth1",
-    "approx_eligible_nodes_depth0",
-    "approx_eligible_nodes_depth1",
-    "approx_exactify_triggered_nodes_depth0",
-    "approx_exactify_triggered_nodes_depth1",
-    "approx_uncertainty_triggered_nodes_depth0",
-    "approx_uncertainty_triggered_nodes_depth1",
-    "approx_pub_unrefined_cells_on_pub_total",
-    "approx_pub_patchable_cells_total",
-    "approx_pub_cells_skipped_by_childrows",
-    "approx_nodes_with_patchable_pub",
-    "approx_nodes_with_patch_calls",
-    "approx_patch_cell_cache_hits",
-    "approx_patch_cell_cache_misses",
-    "approx_patch_cache_hit_updates",
-    "approx_patch_cache_miss_oracle_calls",
-    "approx_patch_subset_materializations",
-    "approx_patch_skipped_already_tight",
-    "approx_patch_skipped_no_possible_improve",
-    "approx_patch_skipped_cached",
-    "approx_patch_budget_effective_min",
-    "approx_patch_budget_effective_avg",
-    "approx_patch_budget_effective_max",
-    "approx_ref_neff_mean",
-    "approx_ref_neff_max",
-    "approx_ref_k0_min",
-    "approx_ref_k0_mean",
-    "approx_ref_k0_max",
-    "approx_ref_k_final_min",
-    "approx_ref_k_final_mean",
-    "approx_ref_k_final_max",
-    "approx_ref_k_depth0_mean",
-    "approx_ref_k_depth1_mean",
-    "approx_ref_widen_count",
-    "approx_ref_widen_count_depth0",
-    "approx_ref_widen_count_depth1",
-    "approx_ref_chosen_feature_rank_depth0",
-    "approx_ref_chosen_feature_rank_depth1",
-    "approx_ref_chosen_in_initial_shortlist_rate_depth0",
-    "approx_ref_chosen_in_initial_shortlist_rate_depth1",
     "fast100_exactify_nodes_allowed",
     "fast100_exactify_nodes_skipped_small_support",
     "fast100_exactify_nodes_skipped_dominant_gain",
@@ -247,16 +199,6 @@ SEED_COLUMNS = [
     "used_min_child_size",
     "used_max_branching",
     "used_reg",
-    "used_approx_mode",
-    "used_patch_budget_per_feature",
-    "used_exactify_top_m",
-    "used_tau_mode",
-    "used_approx_feature_scan_limit",
-    "used_approx_ref_shortlist_enabled",
-    "used_approx_ref_widen_max",
-    "used_approx_challenger_sweep_enabled",
-    "used_approx_challenger_sweep_max_features",
-    "used_approx_challenger_sweep_max_patch_calls_per_node",
     "tree_artifact_path",
 ]
 
@@ -298,27 +240,6 @@ class PipelineSpec:
 
 
 PIPELINES: dict[str, PipelineSpec] = {
-    "cart": PipelineSpec(
-        name="cart",
-        description="Run CART-binned multi-split SPLIT experiments on OpenML datasets.",
-        solver="msplit",
-        binning_backend="cart",
-        run_name_fmt="run_%Y%m%d_%H%M%S",
-        results_root_default="results/runs",
-        stable_results_dir_default="results",
-        depth_log_filename="multisplit_depth_vs_accuracy.log",
-        plot_filename="multisplit_cart_dp_accuracy.png",
-        plot_vs_paper_filename="multisplit_cart_dp_vs_paper_accuracy.png",
-        stable_csv_filename="multisplit_cart_dp_results.csv",
-        stable_plot_filename="multisplit_cart_dp_accuracy.png",
-        stable_log_filename="multisplit_depth_vs_accuracy.log",
-        plot_color="#005f73",
-        plot_label="MSPLIT",
-        depth_log_title="MSPLIT (CART bins + C++ DP/lookahead) depth vs. accuracy",
-        start_message="Starting multisplit experiment run.",
-        study_prefix="cart",
-        artifact_pipeline_name="cart",
-    ),
     "lightgbm": PipelineSpec(
         name="lightgbm",
         description="Run LightGBM-binned multi-split SPLIT experiments on OpenML datasets.",
@@ -368,6 +289,7 @@ WORKER_ARGS: argparse.Namespace | None = None
 WORKER_TUNED_PARAMS: dict[tuple[str, int], dict[str, Any]] | None = None
 WORKER_PIPELINE: PipelineSpec | None = None
 WORKER_PREPROCESSED_CACHE: dict[tuple[str, int], dict[str, Any]] = {}
+WORKER_BINNER_CACHE: dict[tuple[Any, ...], Any] = {}
 
 
 def _get_pipeline(pipeline_name: str) -> PipelineSpec:
@@ -495,16 +417,22 @@ def _parse_args(pipeline: PipelineSpec) -> argparse.Namespace:
         default=[0, 1, 2, 3, 4],
         help="Random seeds used for train/test splits.",
     )
-    parser.add_argument("--max-bins", type=int, default=255)
+    parser.add_argument("--max-bins", type=int, default=1024)
     parser.add_argument("--min-samples-leaf", type=int, default=5)
     parser.add_argument("--min-child-size", type=int, default=2)
     parser.add_argument(
+        "--min-split-size",
+        type=int,
+        default=0,
+        help="Minimum rows required to consider splitting a node (0 lets the solver derive 2 * min_child_size).",
+    )
+    parser.add_argument(
         "--leaf-frac",
         type=float,
-        default=None,
+        default=0.002,
         help=(
-            "Optional fixed min-support fraction over fit rows. When set, min_samples_leaf and "
-            "min_child_size are tied to max(2, ceil(leaf_frac * n_fit))."
+            "Optional fixed min-support fraction over fit rows. When set, min_child_size is "
+            "derived as max(2, ceil(leaf_frac * n_fit)) while LightGBM min_samples_leaf stays independent."
         ),
     )
     parser.add_argument(
@@ -522,67 +450,6 @@ def _parse_args(pipeline: PipelineSpec) -> argparse.Namespace:
         choices=["optimal_dp", "rush_dp"],
         default=str(os.environ.get("MSPLIT_VARIANT", "rush_dp")).strip().lower(),
         help="MSPLIT interval partitioner variant (only used for msplit solver pipelines).",
-    )
-    parser.add_argument(
-        "--approx-mode",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Enable optional approximate split selection mode (UB-only closure + selective exactify).",
-    )
-    parser.add_argument(
-        "--patch-budget-per-feature",
-        type=int,
-        default=12,
-        help="Per-feature cap on approximate UB patch calls.",
-    )
-    parser.add_argument(
-        "--exactify-top-m",
-        type=int,
-        default=2,
-        help="Cap on exactified features per node when approx margin is inconclusive.",
-    )
-    parser.add_argument(
-        "--tau-mode",
-        choices=["lambda", "lambda_sqrt_r"],
-        default="lambda_sqrt_r",
-        help="Margin threshold mode for approx acceptance.",
-    )
-    parser.add_argument(
-        "--approx-feature-scan-limit",
-        type=int,
-        default=0,
-        help="0 scans all features; otherwise scans deterministic prefix of this size.",
-    )
-    parser.add_argument(
-        "--approx-ref-shortlist",
-        dest="approx_ref_shortlist_enabled",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Enable reference-guided shortlist controller in approx mode.",
-    )
-    parser.add_argument(
-        "--approx-ref-widen-max",
-        type=int,
-        default=1,
-        help="Maximum shortlist widening retries per approx-eligible node.",
-    )
-    parser.add_argument(
-        "--approx-challenger-sweep-enabled",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Enable optional challenger sweep refinement (disabled by default for stability).",
-    )
-    parser.add_argument(
-        "--approx-challenger-sweep-max-features",
-        type=int,
-        default=3,
-        help="Maximum ambiguous features allowed for a challenger sweep invocation.",
-    )
-    parser.add_argument(
-        "--approx-challenger-sweep-max-patch-calls-per-node",
-        type=int,
-        default=0,
-        help="Per-node patch-call cap for challenger sweep (0 uses solver auto cap).",
     )
     parser.add_argument(
         "--parallel-trials",
@@ -822,17 +689,6 @@ def _parse_args(pipeline: PipelineSpec) -> argparse.Namespace:
             f"--msplit-variant must be one of {sorted({'optimal_dp', 'rush_dp'})}, got {args.msplit_variant!r}"
         )
     args.msplit_variant = variant_aliases[variant_raw]
-    args.patch_budget_per_feature = max(0, int(args.patch_budget_per_feature))
-    args.exactify_top_m = max(0, int(args.exactify_top_m))
-    args.approx_feature_scan_limit = max(0, int(args.approx_feature_scan_limit))
-    args.approx_ref_widen_max = max(0, int(args.approx_ref_widen_max))
-    args.approx_challenger_sweep_max_features = max(1, int(args.approx_challenger_sweep_max_features))
-    args.approx_challenger_sweep_max_patch_calls_per_node = max(
-        0, int(args.approx_challenger_sweep_max_patch_calls_per_node)
-    )
-    args.tau_mode = str(getattr(args, "tau_mode", "lambda_sqrt_r")).strip().lower()
-    if args.tau_mode not in {"lambda", "lambda_sqrt_r"}:
-        raise ValueError(f"--tau-mode must be one of ['lambda', 'lambda_sqrt_r'], got {args.tau_mode!r}")
     if not 0.0 < float(args.test_size) < 1.0:
         raise ValueError(f"--test-size must be in (0, 1), got {args.test_size}")
     if not 0.0 < float(args.optuna_val_size) < 1.0:
@@ -1016,12 +872,14 @@ def _worker_init(
     tuned_params: dict[tuple[str, int], dict[str, Any]] | None,
     pipeline_name: str,
 ) -> None:
-    global WORKER_DATASET_PAYLOAD, WORKER_ARGS, WORKER_TUNED_PARAMS, WORKER_PIPELINE, WORKER_PREPROCESSED_CACHE
+    global WORKER_DATASET_PAYLOAD, WORKER_ARGS, WORKER_TUNED_PARAMS, WORKER_PIPELINE
+    global WORKER_PREPROCESSED_CACHE, WORKER_BINNER_CACHE
     WORKER_DATASET_PAYLOAD = dataset_payload
     WORKER_ARGS = argparse.Namespace(**args_dict)
     WORKER_TUNED_PARAMS = tuned_params or {}
     WORKER_PIPELINE = _get_pipeline(pipeline_name)
     WORKER_PREPROCESSED_CACHE = {}
+    WORKER_BINNER_CACHE = {}
     _set_thread_caps(threads_per_trial)
 
 
@@ -1143,15 +1001,6 @@ def _fit_binner(
     args: argparse.Namespace,
     pipeline: PipelineSpec,
 ):
-    if pipeline.binning_backend == "cart":
-        return fit_cart_binner(
-            X_fit_proc,
-            y_fit,
-            max_bins=trial_params["max_bins"],
-            min_samples_leaf=trial_params["min_samples_leaf"],
-            random_state=seed,
-        )
-
     from lightgbm_binning import fit_lightgbm_binner
 
     with _lightgbm_gpu_gate(args=args, pipeline=pipeline):
@@ -1184,7 +1033,82 @@ def _fit_binner(
             ensemble_bagging_fraction=args.lgb_ensemble_bagging_fraction,
             ensemble_bagging_freq=args.lgb_ensemble_bagging_freq,
             threshold_dedup_eps=args.lgb_threshold_dedup_eps,
+            collect_teacher_logit=True,
         )
+
+
+def _binner_cache_key(
+    dataset_name: str | None,
+    seed: int,
+    trial_params: dict[str, Any],
+    args: argparse.Namespace,
+    pipeline: PipelineSpec,
+) -> tuple[Any, ...] | None:
+    if dataset_name is None or pipeline.binning_backend != "lightgbm":
+        return None
+    return (
+        str(dataset_name),
+        int(seed),
+        int(trial_params["max_bins"]),
+        int(trial_params["min_samples_leaf"]),
+        int(trial_params.get("lgb_n_estimators", 10000)),
+        int(trial_params.get("lgb_num_leaves", getattr(args, "lgb_num_leaves", 31))),
+        float(trial_params.get("lgb_learning_rate", getattr(args, "lgb_learning_rate", 0.05))),
+        float(trial_params.get("lgb_feature_fraction", getattr(args, "lgb_feature_fraction", 1.0))),
+        float(trial_params.get("lgb_bagging_fraction", getattr(args, "lgb_bagging_fraction", 1.0))),
+        int(trial_params.get("lgb_bagging_freq", getattr(args, "lgb_bagging_freq", 0))),
+        int(trial_params.get("lgb_min_data_in_bin", getattr(args, "lgb_min_data_in_bin", 1))),
+        int(trial_params.get("lgb_min_data_in_leaf", getattr(args, "lgb_min_data_in_leaf", 2))),
+        float(trial_params.get("lgb_lambda_l2", getattr(args, "lgb_lambda_l2", 0.0))),
+        str(getattr(args, "lgb_device_type", "cpu")),
+        int(getattr(args, "lgb_ensemble_runs", 1)),
+        float(getattr(args, "lgb_ensemble_feature_fraction", 1.0)),
+        float(getattr(args, "lgb_ensemble_bagging_fraction", 1.0)),
+        int(getattr(args, "lgb_ensemble_bagging_freq", 0)),
+        float(getattr(args, "lgb_threshold_dedup_eps", 1e-9)),
+    )
+
+
+def _fit_or_get_binner(
+    *,
+    dataset_name: str | None,
+    X_fit_proc: np.ndarray,
+    y_fit: np.ndarray,
+    X_binner_val_proc: np.ndarray,
+    y_binner_val: np.ndarray,
+    trial_params: dict[str, Any],
+    seed: int,
+    args: argparse.Namespace,
+    pipeline: PipelineSpec,
+):
+    global WORKER_BINNER_CACHE
+    cache_key = _binner_cache_key(dataset_name, seed, trial_params, args, pipeline)
+    if cache_key is not None:
+        cached = WORKER_BINNER_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+    binner = _fit_binner(
+        X_fit_proc,
+        y_fit,
+        X_binner_val_proc,
+        y_binner_val,
+        trial_params,
+        seed=seed,
+        args=args,
+        pipeline=pipeline,
+    )
+    if cache_key is not None:
+        WORKER_BINNER_CACHE[cache_key] = binner
+    return binner
+
+
+def _teacher_kwargs_from_binner(binner: Any) -> dict[str, Any]:
+    return {
+        "teacher_logit": getattr(binner, "teacher_train_logit", None),
+        "teacher_boundary_gain": getattr(binner, "boundary_gain_per_feature", None),
+        "teacher_boundary_cover": getattr(binner, "boundary_cover_per_feature", None),
+        "teacher_boundary_value_jump": getattr(binner, "boundary_value_jump_per_feature", None),
+    }
 
 
 def _run_single_trial_task(task: tuple[str, int, int, float]) -> dict[str, Any]:
@@ -1237,92 +1161,23 @@ def _run_single_trial_task(task: tuple[str, int, int, float]) -> dict[str, Any]:
         "rush_refinement_recursive_unique_states": np.nan,
         "rush_refinement_depth_logs": "",
         "interval_refinements_attempted": np.nan,
+        "debr_refine_calls": np.nan,
+        "debr_refine_improved": np.nan,
+        "debr_total_moves": np.nan,
+        "debr_bridge_policy_calls": np.nan,
+        "debr_descent_moves": np.nan,
+        "debr_bridge_moves": np.nan,
+        "debr_simplify_moves": np.nan,
+        "debr_total_hard_gain": np.nan,
+        "debr_total_soft_gain": np.nan,
+        "debr_total_delta_j": np.nan,
+        "debr_total_component_delta": np.nan,
+        "debr_final_geo_wins": np.nan,
+        "debr_final_block_wins": np.nan,
         "expensive_child_calls": np.nan,
         "expensive_child_sec": np.nan,
         "expensive_child_exactify_calls": np.nan,
         "expensive_child_exactify_sec": np.nan,
-        "approx_mode_enabled": np.nan,
-        "approx_ref_shortlist_enabled": np.nan,
-        "approx_challenger_sweep_enabled": np.nan,
-        "approx_lhat_computed": np.nan,
-        "approx_greedy_patch_calls": np.nan,
-        "approx_greedy_patches_applied": np.nan,
-        "approx_greedy_ub_updates_total": np.nan,
-        "approx_greedy_patch_sec": np.nan,
-        "approx_exactify_triggered_nodes": np.nan,
-        "approx_exactify_features_exact_solved": np.nan,
-        "approx_exactify_stops_by_separation": np.nan,
-        "approx_exactify_stops_by_cap": np.nan,
-        "approx_exactify_stops_by_ambiguous_empty": np.nan,
-        "approx_exactify_stops_by_no_improve": np.nan,
-        "approx_exactify_stops_by_separation_depth0": np.nan,
-        "approx_exactify_stops_by_separation_depth1": np.nan,
-        "approx_exactify_stops_by_cap_depth0": np.nan,
-        "approx_exactify_stops_by_cap_depth1": np.nan,
-        "approx_exactify_features_exact_solved_depth0": np.nan,
-        "approx_exactify_features_exact_solved_depth1": np.nan,
-        "approx_exactify_set_size_depth0_min": np.nan,
-        "approx_exactify_set_size_depth0_mean": np.nan,
-        "approx_exactify_set_size_depth0_max": np.nan,
-        "approx_exactify_set_size_depth1_min": np.nan,
-        "approx_exactify_set_size_depth1_mean": np.nan,
-        "approx_exactify_set_size_depth1_max": np.nan,
-        "approx_exactify_avg_features_per_triggered_node": np.nan,
-        "approx_exactify_ambiguous_set_size_min": np.nan,
-        "approx_exactify_ambiguous_set_size_mean": np.nan,
-        "approx_exactify_ambiguous_set_size_max": np.nan,
-        "approx_exactify_ambiguous_set_shrank_steps": np.nan,
-        "approx_exactify_cap_effective_depth0": np.nan,
-        "approx_exactify_cap_effective_depth1": np.nan,
-        "approx_challenger_sweep_invocations": np.nan,
-        "approx_challenger_sweep_features_processed": np.nan,
-        "approx_challenger_sweep_sec": np.nan,
-        "approx_challenger_sweep_skipped_large_ambiguous": np.nan,
-        "approx_challenger_sweep_patch_cap_hit": np.nan,
-        "approx_uncertainty_triggered_nodes": np.nan,
-        "approx_exactify_trigger_rate_depth0": np.nan,
-        "approx_exactify_trigger_rate_depth1": np.nan,
-        "approx_uncertainty_trigger_rate_depth0": np.nan,
-        "approx_uncertainty_trigger_rate_depth1": np.nan,
-        "approx_eligible_nodes_depth0": np.nan,
-        "approx_eligible_nodes_depth1": np.nan,
-        "approx_exactify_triggered_nodes_depth0": np.nan,
-        "approx_exactify_triggered_nodes_depth1": np.nan,
-        "approx_uncertainty_triggered_nodes_depth0": np.nan,
-        "approx_uncertainty_triggered_nodes_depth1": np.nan,
-        "approx_pub_unrefined_cells_on_pub_total": np.nan,
-        "approx_pub_patchable_cells_total": np.nan,
-        "approx_pub_cells_skipped_by_childrows": np.nan,
-        "approx_nodes_with_patchable_pub": np.nan,
-        "approx_nodes_with_patch_calls": np.nan,
-        "approx_patch_cell_cache_hits": np.nan,
-        "approx_patch_cell_cache_misses": np.nan,
-        "approx_patch_cache_hit_updates": np.nan,
-        "approx_patch_cache_miss_oracle_calls": np.nan,
-        "approx_patch_subset_materializations": np.nan,
-        "approx_patch_skipped_already_tight": np.nan,
-        "approx_patch_skipped_no_possible_improve": np.nan,
-        "approx_patch_skipped_cached": np.nan,
-        "approx_patch_budget_effective_min": np.nan,
-        "approx_patch_budget_effective_avg": np.nan,
-        "approx_patch_budget_effective_max": np.nan,
-        "approx_ref_neff_mean": np.nan,
-        "approx_ref_neff_max": np.nan,
-        "approx_ref_k0_min": np.nan,
-        "approx_ref_k0_mean": np.nan,
-        "approx_ref_k0_max": np.nan,
-        "approx_ref_k_final_min": np.nan,
-        "approx_ref_k_final_mean": np.nan,
-        "approx_ref_k_final_max": np.nan,
-        "approx_ref_k_depth0_mean": np.nan,
-        "approx_ref_k_depth1_mean": np.nan,
-        "approx_ref_widen_count": np.nan,
-        "approx_ref_widen_count_depth0": np.nan,
-        "approx_ref_widen_count_depth1": np.nan,
-        "approx_ref_chosen_feature_rank_depth0": np.nan,
-        "approx_ref_chosen_feature_rank_depth1": np.nan,
-        "approx_ref_chosen_in_initial_shortlist_rate_depth0": np.nan,
-        "approx_ref_chosen_in_initial_shortlist_rate_depth1": np.nan,
         "fast100_exactify_nodes_allowed": np.nan,
         "fast100_exactify_nodes_skipped_small_support": np.nan,
         "fast100_exactify_nodes_skipped_dominant_gain": np.nan,
@@ -1375,16 +1230,6 @@ def _run_single_trial_task(task: tuple[str, int, int, float]) -> dict[str, Any]:
         "used_min_child_size": np.nan,
         "used_max_branching": np.nan,
         "used_reg": np.nan,
-        "used_approx_mode": np.nan,
-        "used_patch_budget_per_feature": np.nan,
-        "used_exactify_top_m": np.nan,
-        "used_tau_mode": "",
-        "used_approx_feature_scan_limit": np.nan,
-        "used_approx_ref_shortlist_enabled": np.nan,
-        "used_approx_ref_widen_max": np.nan,
-        "used_approx_challenger_sweep_enabled": np.nan,
-        "used_approx_challenger_sweep_max_features": np.nan,
-        "used_approx_challenger_sweep_max_patch_calls_per_node": np.nan,
         "msplit_variant": str(getattr(WORKER_ARGS, "msplit_variant", "optimal_dp")),
         "tree_artifact_path": "",
     }
@@ -1497,12 +1342,13 @@ def _run_single_trial(
     feature_names = split_payload["feature_names"]
     trial_params = _resolve_trial_params(args, depth_budget, param_overrides, n_fit=int(y_fit.shape[0]))
 
-    binner = _fit_binner(
-        X_fit_proc,
-        y_fit,
-        X_binner_val_proc,
-        y_binner_val,
-        trial_params,
+    binner = _fit_or_get_binner(
+        dataset_name=dataset_name,
+        X_fit_proc=X_fit_proc,
+        y_fit=y_fit,
+        X_binner_val_proc=X_binner_val_proc,
+        y_binner_val=y_binner_val,
+        trial_params=trial_params,
         seed=seed,
         args=args,
         pipeline=pipeline,
@@ -1532,7 +1378,7 @@ def _run_single_trial(
     )
 
     start = time.time()
-    model.fit(Z_fit, y_fit)
+    model.fit(Z_fit, y_fit, **_teacher_kwargs_from_binner(binner))
     fit_time = time.time() - start
     objective = _extract_objective(model)
 
@@ -1589,7 +1435,6 @@ def _run_single_trial(
             min_child_size=int(trial_params["min_child_size"]),
             max_branching=int(trial_params["max_branching"]),
             reg=float(trial_params["reg"]),
-            branch_penalty=0.0,
             msplit_variant=str(msplit_variant),
             tree_root=model.tree_,
             binner=binner,
@@ -1625,9 +1470,65 @@ def _run_single_trial(
         "dp_cache_bucket_entries_scanned": _optional_int_attr(model, "dp_cache_bucket_entries_scanned_"),
         "dp_cache_bucket_max_size": _optional_int_attr(model, "dp_cache_bucket_max_size_"),
         "greedy_subproblem_calls": _optional_int_attr(model, "greedy_subproblem_calls_"),
+        "profiling_greedy_complete_calls_by_depth": _optional_json_attr(
+            model, "profiling_greedy_complete_calls_by_depth_"
+        ),
         "greedy_cache_hits": _optional_int_attr(model, "greedy_cache_hits_"),
         "greedy_unique_states": _optional_int_attr(model, "greedy_unique_states_"),
         "greedy_cache_entries_peak": _optional_int_attr(model, "greedy_cache_entries_peak_"),
+        "greedy_cache_bytes_peak": _optional_int_attr(model, "greedy_cache_bytes_peak_"),
+        "native_n_classes": _optional_int_attr(model, "native_n_classes_"),
+        "native_teacher_class_count": _optional_int_attr(model, "native_teacher_class_count_"),
+        "native_binary_mode": _optional_int_attr(model, "native_binary_mode_"),
+        "atomized_features_prepared": _optional_int_attr(model, "atomized_features_prepared_"),
+        "atomized_coarse_candidates": _optional_int_attr(model, "atomized_coarse_candidates_"),
+        "atomized_coarse_pruned_candidates": _optional_int_attr(
+            model, "atomized_coarse_pruned_candidates_"
+        ),
+        "atomized_coarse_prune_rate": (
+            float(getattr(model, "atomized_coarse_pruned_candidates_", 0))
+            / float(getattr(model, "atomized_coarse_candidates_", 0))
+            if float(getattr(model, "atomized_coarse_candidates_", 0)) > 0.0
+            else np.nan
+        ),
+        "atomized_coarse_survivor_rate": (
+            1.0
+            - (
+                float(getattr(model, "atomized_coarse_pruned_candidates_", 0))
+                / float(getattr(model, "atomized_coarse_candidates_", 0))
+            )
+            if float(getattr(model, "atomized_coarse_candidates_", 0)) > 0.0
+            else np.nan
+        ),
+        "atomized_final_candidates": _optional_int_attr(model, "atomized_final_candidates_"),
+        "greedy_feature_survivor_histogram": _optional_json_attr(
+            model, "greedy_feature_survivor_histogram_"
+        ),
+        "nominee_unique_total": _optional_int_attr(model, "nominee_unique_total_"),
+        "nominee_child_interval_lookups": _optional_int_attr(model, "nominee_child_interval_lookups_"),
+        "nominee_child_interval_unique": _optional_int_attr(model, "nominee_child_interval_unique_"),
+        "nominee_exactified_total": _optional_int_attr(model, "nominee_exactified_total_"),
+        "nominee_incumbent_updates": _optional_int_attr(model, "nominee_incumbent_updates_"),
+        "nominee_threatening_samples": _optional_int_attr(model, "nominee_threatening_samples_"),
+        "nominee_threatening_sum": _optional_float_attr(model, "nominee_threatening_sum_"),
+        "nominee_threatening_max": _optional_int_attr(model, "nominee_threatening_max_"),
+        "nominee_exact_child_eval_sec": _optional_float_attr(
+            model, "profiling_recursive_child_eval_sec_"
+        ),
+        "nominee_debr_sec": _optional_float_attr(model, "profiling_refine_sec_"),
+        "debr_refine_calls": _optional_int_attr(model, "debr_refine_calls_"),
+        "debr_refine_improved": _optional_int_attr(model, "debr_refine_improved_"),
+        "debr_total_moves": _optional_int_attr(model, "debr_total_moves_"),
+        "debr_bridge_policy_calls": _optional_int_attr(model, "debr_bridge_policy_calls_"),
+        "debr_descent_moves": _optional_int_attr(model, "debr_descent_moves_"),
+        "debr_bridge_moves": _optional_int_attr(model, "debr_bridge_moves_"),
+        "debr_simplify_moves": _optional_int_attr(model, "debr_simplify_moves_"),
+        "debr_total_hard_gain": _optional_float_attr(model, "debr_total_hard_gain_"),
+        "debr_total_soft_gain": _optional_float_attr(model, "debr_total_soft_gain_"),
+        "debr_total_delta_j": _optional_float_attr(model, "debr_total_delta_j_"),
+        "debr_total_component_delta": _optional_int_attr(model, "debr_total_component_delta_"),
+        "debr_final_geo_wins": _optional_int_attr(model, "debr_final_geo_wins_"),
+        "debr_final_block_wins": _optional_int_attr(model, "debr_final_block_wins_"),
         "greedy_cache_clears": _optional_int_attr(model, "greedy_cache_clears_"),
         "rush_total_time_sec": _optional_float_attr(model, "rush_total_time_sec_"),
         "rush_refinement_child_time_sec": _optional_float_attr(model, "rush_refinement_child_time_sec_"),
@@ -1643,202 +1544,6 @@ def _run_single_trial(
         "expensive_child_sec": _optional_float_attr(model, "expensive_child_sec_"),
         "expensive_child_exactify_calls": _optional_int_attr(model, "expensive_child_exactify_calls_"),
         "expensive_child_exactify_sec": _optional_float_attr(model, "expensive_child_exactify_sec_"),
-        "approx_mode_enabled": _optional_int_attr(model, "approx_mode_enabled_"),
-        "approx_ref_shortlist_enabled": _optional_int_attr(model, "approx_ref_shortlist_enabled_"),
-        "approx_challenger_sweep_enabled": _optional_int_attr(model, "approx_challenger_sweep_enabled_"),
-        "approx_lhat_computed": _optional_int_attr(model, "approx_lhat_computed_"),
-        "approx_greedy_patch_calls": _optional_int_attr(model, "approx_greedy_patch_calls_"),
-        "approx_greedy_patches_applied": _optional_int_attr(model, "approx_greedy_patches_applied_"),
-        "approx_greedy_ub_updates_total": _optional_int_attr(model, "approx_greedy_ub_updates_total_"),
-        "approx_greedy_patch_sec": _optional_float_attr(model, "approx_greedy_patch_sec_"),
-        "approx_exactify_triggered_nodes": _optional_int_attr(model, "approx_exactify_triggered_nodes_"),
-        "approx_exactify_features_exact_solved": _optional_int_attr(
-            model, "approx_exactify_features_exact_solved_"
-        ),
-        "approx_exactify_stops_by_separation": _optional_int_attr(
-            model, "approx_exactify_stops_by_separation_"
-        ),
-        "approx_exactify_stops_by_cap": _optional_int_attr(
-            model, "approx_exactify_stops_by_cap_"
-        ),
-        "approx_exactify_stops_by_ambiguous_empty": _optional_int_attr(
-            model, "approx_exactify_stops_by_ambiguous_empty_"
-        ),
-        "approx_exactify_stops_by_no_improve": _optional_int_attr(
-            model, "approx_exactify_stops_by_no_improve_"
-        ),
-        "approx_exactify_stops_by_separation_depth0": _optional_int_attr(
-            model, "approx_exactify_stops_by_separation_depth0_"
-        ),
-        "approx_exactify_stops_by_separation_depth1": _optional_int_attr(
-            model, "approx_exactify_stops_by_separation_depth1_"
-        ),
-        "approx_exactify_stops_by_cap_depth0": _optional_int_attr(
-            model, "approx_exactify_stops_by_cap_depth0_"
-        ),
-        "approx_exactify_stops_by_cap_depth1": _optional_int_attr(
-            model, "approx_exactify_stops_by_cap_depth1_"
-        ),
-        "approx_exactify_features_exact_solved_depth0": _optional_int_attr(
-            model, "approx_exactify_features_exact_solved_depth0_"
-        ),
-        "approx_exactify_features_exact_solved_depth1": _optional_int_attr(
-            model, "approx_exactify_features_exact_solved_depth1_"
-        ),
-        "approx_exactify_set_size_depth0_min": _optional_int_attr(
-            model, "approx_exactify_set_size_depth0_min_"
-        ),
-        "approx_exactify_set_size_depth0_mean": _optional_float_attr(
-            model, "approx_exactify_set_size_depth0_mean_"
-        ),
-        "approx_exactify_set_size_depth0_max": _optional_int_attr(
-            model, "approx_exactify_set_size_depth0_max_"
-        ),
-        "approx_exactify_set_size_depth1_min": _optional_int_attr(
-            model, "approx_exactify_set_size_depth1_min_"
-        ),
-        "approx_exactify_set_size_depth1_mean": _optional_float_attr(
-            model, "approx_exactify_set_size_depth1_mean_"
-        ),
-        "approx_exactify_set_size_depth1_max": _optional_int_attr(
-            model, "approx_exactify_set_size_depth1_max_"
-        ),
-        "approx_exactify_avg_features_per_triggered_node": _optional_float_attr(
-            model, "approx_exactify_avg_features_per_triggered_node_"
-        ),
-        "approx_exactify_ambiguous_set_size_min": _optional_float_attr(
-            model, "approx_exactify_ambiguous_set_size_min_"
-        ),
-        "approx_exactify_ambiguous_set_size_mean": _optional_float_attr(
-            model, "approx_exactify_ambiguous_set_size_mean_"
-        ),
-        "approx_exactify_ambiguous_set_size_max": _optional_int_attr(
-            model, "approx_exactify_ambiguous_set_size_max_"
-        ),
-        "approx_exactify_ambiguous_set_shrank_steps": _optional_int_attr(
-            model, "approx_exactify_ambiguous_set_shrank_steps_"
-        ),
-        "approx_exactify_cap_effective_depth0": _optional_float_attr(
-            model, "approx_exactify_cap_effective_depth0_"
-        ),
-        "approx_exactify_cap_effective_depth1": _optional_float_attr(
-            model, "approx_exactify_cap_effective_depth1_"
-        ),
-        "approx_challenger_sweep_invocations": _optional_int_attr(
-            model, "approx_challenger_sweep_invocations_"
-        ),
-        "approx_challenger_sweep_features_processed": _optional_int_attr(
-            model, "approx_challenger_sweep_features_processed_"
-        ),
-        "approx_challenger_sweep_sec": _optional_float_attr(
-            model, "approx_challenger_sweep_sec_"
-        ),
-        "approx_challenger_sweep_skipped_large_ambiguous": _optional_int_attr(
-            model, "approx_challenger_sweep_skipped_large_ambiguous_"
-        ),
-        "approx_challenger_sweep_patch_cap_hit": _optional_int_attr(
-            model, "approx_challenger_sweep_patch_cap_hit_"
-        ),
-        "approx_uncertainty_triggered_nodes": _optional_int_attr(model, "approx_uncertainty_triggered_nodes_"),
-        "approx_exactify_trigger_rate_depth0": _optional_float_attr(model, "approx_exactify_trigger_rate_depth0_"),
-        "approx_exactify_trigger_rate_depth1": _optional_float_attr(model, "approx_exactify_trigger_rate_depth1_"),
-        "approx_uncertainty_trigger_rate_depth0": _optional_float_attr(
-            model, "approx_uncertainty_trigger_rate_depth0_"
-        ),
-        "approx_uncertainty_trigger_rate_depth1": _optional_float_attr(
-            model, "approx_uncertainty_trigger_rate_depth1_"
-        ),
-        "approx_eligible_nodes_depth0": _optional_int_attr(model, "approx_eligible_nodes_depth0_"),
-        "approx_eligible_nodes_depth1": _optional_int_attr(model, "approx_eligible_nodes_depth1_"),
-        "approx_exactify_triggered_nodes_depth0": _optional_int_attr(
-            model, "approx_exactify_triggered_nodes_depth0_"
-        ),
-        "approx_exactify_triggered_nodes_depth1": _optional_int_attr(
-            model, "approx_exactify_triggered_nodes_depth1_"
-        ),
-        "approx_uncertainty_triggered_nodes_depth0": _optional_int_attr(
-            model, "approx_uncertainty_triggered_nodes_depth0_"
-        ),
-        "approx_uncertainty_triggered_nodes_depth1": _optional_int_attr(
-            model, "approx_uncertainty_triggered_nodes_depth1_"
-        ),
-        "approx_pub_unrefined_cells_on_pub_total": _optional_int_attr(
-            model, "approx_pub_unrefined_cells_on_pub_total_"
-        ),
-        "approx_pub_patchable_cells_total": _optional_int_attr(
-            model, "approx_pub_patchable_cells_total_"
-        ),
-        "approx_pub_cells_skipped_by_childrows": _optional_int_attr(
-            model, "approx_pub_cells_skipped_by_childrows_"
-        ),
-        "approx_nodes_with_patchable_pub": _optional_int_attr(
-            model, "approx_nodes_with_patchable_pub_"
-        ),
-        "approx_nodes_with_patch_calls": _optional_int_attr(
-            model, "approx_nodes_with_patch_calls_"
-        ),
-        "approx_patch_cell_cache_hits": _optional_int_attr(
-            model, "approx_patch_cell_cache_hits_"
-        ),
-        "approx_patch_cell_cache_misses": _optional_int_attr(
-            model, "approx_patch_cell_cache_misses_"
-        ),
-        "approx_patch_cache_hit_updates": _optional_int_attr(
-            model, "approx_patch_cache_hit_updates_"
-        ),
-        "approx_patch_cache_miss_oracle_calls": _optional_int_attr(
-            model, "approx_patch_cache_miss_oracle_calls_"
-        ),
-        "approx_patch_subset_materializations": _optional_int_attr(
-            model, "approx_patch_subset_materializations_"
-        ),
-        "approx_patch_skipped_already_tight": _optional_int_attr(
-            model, "approx_patch_skipped_already_tight_"
-        ),
-        "approx_patch_skipped_no_possible_improve": _optional_int_attr(
-            model, "approx_patch_skipped_no_possible_improve_"
-        ),
-        "approx_patch_skipped_cached": _optional_int_attr(
-            model, "approx_patch_skipped_cached_"
-        ),
-        "approx_patch_budget_effective_min": _optional_int_attr(
-            model, "approx_patch_budget_effective_min_"
-        ),
-        "approx_patch_budget_effective_avg": _optional_float_attr(
-            model, "approx_patch_budget_effective_avg_"
-        ),
-        "approx_patch_budget_effective_max": _optional_int_attr(
-            model, "approx_patch_budget_effective_max_"
-        ),
-        "approx_ref_neff_mean": _optional_float_attr(model, "approx_ref_neff_mean_"),
-        "approx_ref_neff_max": _optional_float_attr(model, "approx_ref_neff_max_"),
-        "approx_ref_k0_min": _optional_int_attr(model, "approx_ref_k0_min_"),
-        "approx_ref_k0_mean": _optional_float_attr(model, "approx_ref_k0_mean_"),
-        "approx_ref_k0_max": _optional_int_attr(model, "approx_ref_k0_max_"),
-        "approx_ref_k_final_min": _optional_int_attr(model, "approx_ref_k_final_min_"),
-        "approx_ref_k_final_mean": _optional_float_attr(model, "approx_ref_k_final_mean_"),
-        "approx_ref_k_final_max": _optional_int_attr(model, "approx_ref_k_final_max_"),
-        "approx_ref_k_depth0_mean": _optional_float_attr(model, "approx_ref_k_depth0_mean_"),
-        "approx_ref_k_depth1_mean": _optional_float_attr(model, "approx_ref_k_depth1_mean_"),
-        "approx_ref_widen_count": _optional_int_attr(model, "approx_ref_widen_count_"),
-        "approx_ref_widen_count_depth0": _optional_int_attr(
-            model, "approx_ref_widen_count_depth0_"
-        ),
-        "approx_ref_widen_count_depth1": _optional_int_attr(
-            model, "approx_ref_widen_count_depth1_"
-        ),
-        "approx_ref_chosen_feature_rank_depth0": _optional_float_attr(
-            model, "approx_ref_chosen_feature_rank_depth0_"
-        ),
-        "approx_ref_chosen_feature_rank_depth1": _optional_float_attr(
-            model, "approx_ref_chosen_feature_rank_depth1_"
-        ),
-        "approx_ref_chosen_in_initial_shortlist_rate_depth0": _optional_float_attr(
-            model, "approx_ref_chosen_in_initial_shortlist_rate_depth0_"
-        ),
-        "approx_ref_chosen_in_initial_shortlist_rate_depth1": _optional_float_attr(
-            model, "approx_ref_chosen_in_initial_shortlist_rate_depth1_"
-        ),
         "fast100_exactify_nodes_allowed": _optional_int_attr(
             model, "fast100_exactify_nodes_allowed_"
         ),
@@ -1977,24 +1682,6 @@ def _run_single_trial(
         "used_min_child_size": int(trial_params["min_child_size"]),
         "used_max_branching": int(trial_params["max_branching"]),
         "used_reg": float(trial_params["reg"]),
-        "used_approx_mode": int(bool(getattr(args, "approx_mode", False))),
-        "used_patch_budget_per_feature": int(getattr(args, "patch_budget_per_feature", 12)),
-        "used_exactify_top_m": int(getattr(args, "exactify_top_m", 2)),
-        "used_tau_mode": str(getattr(args, "tau_mode", "lambda_sqrt_r")),
-        "used_approx_feature_scan_limit": int(getattr(args, "approx_feature_scan_limit", 0)),
-        "used_approx_ref_shortlist_enabled": int(
-            bool(getattr(args, "approx_ref_shortlist_enabled", True))
-        ),
-        "used_approx_ref_widen_max": int(getattr(args, "approx_ref_widen_max", 1)),
-        "used_approx_challenger_sweep_enabled": int(
-            bool(getattr(args, "approx_challenger_sweep_enabled", False))
-        ),
-        "used_approx_challenger_sweep_max_features": int(
-            getattr(args, "approx_challenger_sweep_max_features", 3)
-        ),
-        "used_approx_challenger_sweep_max_patch_calls_per_node": int(
-            getattr(args, "approx_challenger_sweep_max_patch_calls_per_node", 0)
-        ),
         "msplit_variant": str(msplit_variant),
         "tree_artifact_path": artifact_path_text,
     }
@@ -2007,34 +1694,17 @@ def _build_msplit_model(
     args: argparse.Namespace,
 ):
     msplit_variant = str(getattr(args, "msplit_variant", "rush_dp")).strip().lower()
-    interval_partition_solver = "optimal_dp" if msplit_variant == "optimal_dp" else "rush_dp"
     model = MSPLIT(
         lookahead_depth_budget=trial_params["lookahead_depth_budget"],
         full_depth_budget=depth_budget,
         reg=trial_params["reg"],
-        branch_penalty=0.0,
-        max_bins=trial_params["max_bins"],
-        min_samples_leaf=trial_params["min_samples_leaf"],
         min_child_size=trial_params["min_child_size"],
+        min_split_size=trial_params["min_split_size"],
         max_branching=trial_params["max_branching"],
         time_limit=args.time_limit,
         verbose=False,
         random_state=seed,
-        input_is_binned=True,
         use_cpp_solver=True,
-        interval_partition_solver=interval_partition_solver,
-        approx_mode=bool(getattr(args, "approx_mode", False)),
-        patch_budget_per_feature=int(getattr(args, "patch_budget_per_feature", 12)),
-        exactify_top_m=int(getattr(args, "exactify_top_m", 2)),
-        tau_mode=str(getattr(args, "tau_mode", "lambda_sqrt_r")),
-        approx_feature_scan_limit=int(getattr(args, "approx_feature_scan_limit", 0)),
-        approx_ref_shortlist_enabled=bool(getattr(args, "approx_ref_shortlist_enabled", True)),
-        approx_ref_widen_max=int(getattr(args, "approx_ref_widen_max", 1)),
-        approx_challenger_sweep_enabled=bool(getattr(args, "approx_challenger_sweep_enabled", False)),
-        approx_challenger_sweep_max_features=int(getattr(args, "approx_challenger_sweep_max_features", 3)),
-        approx_challenger_sweep_max_patch_calls_per_node=int(
-            getattr(args, "approx_challenger_sweep_max_patch_calls_per_node", 0)
-        ),
     )
     return model, msplit_variant
 
@@ -2207,6 +1877,7 @@ def _resolve_trial_params(
         "max_bins": int(args.max_bins),
         "min_samples_leaf": int(args.min_samples_leaf),
         "min_child_size": int(args.min_child_size),
+        "min_split_size": int(args.min_split_size),
         "leaf_frac": float(args.leaf_frac) if getattr(args, "leaf_frac", None) is not None else None,
         "max_branching": int(args.max_branching),
         "reg": float(args.reg),
@@ -2243,28 +1914,25 @@ def _resolve_trial_params(
         if np.isfinite(leaf_frac_candidate) and 0.0 < leaf_frac_candidate <= 1.0:
             leaf_frac = leaf_frac_candidate
 
-    legacy_m = max(2, int(params["min_samples_leaf"]), int(params["min_child_size"]))
-    leaf_frac_choices = [float(v) for v in getattr(args, "optuna_leaf_frac_grid", [0.01, 0.02, 0.05])]
-    if leaf_frac is not None and getattr(args, "leaf_frac", None) is None and leaf_frac_choices:
-        leaf_frac = float(_nearest_choice(float(leaf_frac), leaf_frac_choices))
-    if n_fit is not None and int(n_fit) > 0:
-        n_fit_i = int(n_fit)
-        if leaf_frac is None:
-            leaf_frac = _leaf_frac_from_legacy_m(legacy_m, n_fit_i)
-            if getattr(args, "leaf_frac", None) is None and leaf_frac_choices:
-                leaf_frac = float(_nearest_choice(float(leaf_frac), leaf_frac_choices))
-        derived_m = _derive_min_support_from_leaf_frac(float(leaf_frac), n_fit_i)
-        params["min_samples_leaf"] = int(derived_m)
-        params["min_child_size"] = int(derived_m)
-        params["leaf_frac"] = float(leaf_frac)
+    requested_min_samples_leaf = int(params["min_samples_leaf"])
+    requested_min_child_size = int(params["min_child_size"])
+    min_samples_leaf = max(2, requested_min_samples_leaf)
+    if requested_min_child_size > 0:
+        min_child_size = max(2, requested_min_child_size)
+    elif leaf_frac is not None and n_fit is not None and int(n_fit) > 0:
+        min_child_size = _derive_min_support_from_leaf_frac(float(leaf_frac), int(n_fit))
     else:
-        tied_m = int(legacy_m)
-        params["min_samples_leaf"] = tied_m
-        params["min_child_size"] = tied_m
-        if leaf_frac is not None:
-            params["leaf_frac"] = float(leaf_frac)
-        else:
-            params["leaf_frac"] = None
+        min_child_size = 2
+    min_split_size = int(params["min_split_size"])
+    if min_split_size <= 0:
+        min_split_size = max(2, 2 * min_child_size)
+    params["min_samples_leaf"] = int(min_samples_leaf)
+    params["min_child_size"] = int(min_child_size)
+    params["min_split_size"] = int(min_split_size)
+    if leaf_frac is None and n_fit is not None and int(n_fit) > 0:
+        params["leaf_frac"] = float(_leaf_frac_from_legacy_m(min_child_size, int(n_fit)))
+    else:
+        params["leaf_frac"] = float(leaf_frac) if leaf_frac is not None else None
 
     max_branching = int(params["max_branching"])
     if max_branching < 0:
@@ -2274,7 +1942,7 @@ def _resolve_trial_params(
         max_branching = max(2, max_branching)
     params["max_branching"] = max_branching
 
-    params["reg"] = max(1e-8, float(params["reg"]))
+    params["reg"] = max(0.0, float(params["reg"]))
     if is_lightgbm:
         params["lgb_n_estimators"] = 10000
         params["lgb_max_depth"] = -1
@@ -2415,24 +2083,18 @@ def _sanitize_optuna_params(
         if np.isfinite(leaf_frac_candidate) and 0.0 < leaf_frac_candidate <= 1.0:
             leaf_frac = leaf_frac_candidate
 
-    legacy_m = max(2, int(min_samples_leaf_raw), int(min_child_size_raw))
-    leaf_frac_choices = [float(v) for v in limits.get("leaf_frac_choices", [0.01, 0.02, 0.05])]
-    if leaf_frac is not None and getattr(args, "leaf_frac", None) is None and leaf_frac_choices:
-        leaf_frac = float(_nearest_choice(float(leaf_frac), leaf_frac_choices))
-    if n_fit is not None and int(n_fit) > 0:
-        n_fit_i = int(n_fit)
-        if leaf_frac is None:
-            leaf_frac = _leaf_frac_from_legacy_m(legacy_m, n_fit_i)
-            if getattr(args, "leaf_frac", None) is None and leaf_frac_choices:
-                leaf_frac = float(_nearest_choice(float(leaf_frac), leaf_frac_choices))
-        derived_m = _derive_min_support_from_leaf_frac(float(leaf_frac), n_fit_i)
-        derived_m = max(2, min(derived_m, int(limits["min_leaf_upper"]), int(limits["min_child_upper"])))
-        min_samples_leaf = int(derived_m)
-        min_child_size = int(derived_m)
+    min_samples_leaf = max(2, min(int(min_samples_leaf_raw), int(limits["min_leaf_upper"])))
+    if int(min_child_size_raw) > 0:
+        min_child_size = max(2, min(int(min_child_size_raw), int(limits["min_child_upper"])))
+    elif leaf_frac is not None and n_fit is not None and int(n_fit) > 0:
+        min_child_size = max(
+            2,
+            min(_derive_min_support_from_leaf_frac(float(leaf_frac), int(n_fit)), int(limits["min_child_upper"])),
+        )
     else:
-        tied_m = max(2, min(legacy_m, int(limits["min_leaf_upper"]), int(limits["min_child_upper"])))
-        min_samples_leaf = int(tied_m)
-        min_child_size = int(tied_m)
+        min_child_size = 2
+    if leaf_frac is None and n_fit is not None and int(n_fit) > 0:
+        leaf_frac = _leaf_frac_from_legacy_m(min_child_size, int(n_fit))
 
     fixed_max_branching = max(0, int(args.max_branching))
     if fixed_max_branching > 0:
@@ -2451,7 +2113,7 @@ def _sanitize_optuna_params(
     lgb_min_data_in_leaf = int(params.get("lgb_min_data_in_leaf", int(getattr(args, "lgb_min_data_in_leaf", 2))))
     lgb_lambda_l2 = float(params.get("lgb_lambda_l2", float(getattr(args, "lgb_lambda_l2", 0.0))))
 
-    reg = max(float(limits["reg_min"]), min(reg, float(limits["reg_max"])))
+    reg = max(0.0, min(reg, float(limits["reg_max"])))
 
     out = {
         "lookahead_cap": int(lookahead),
@@ -2459,6 +2121,7 @@ def _sanitize_optuna_params(
         "min_samples_leaf": int(min_samples_leaf),
         "min_child_size": int(min_child_size),
         "leaf_frac": float(leaf_frac) if leaf_frac is not None else None,
+        "min_split_size": max(2, int(params.get("min_split_size", 0))) if int(params.get("min_split_size", 0)) > 0 else max(2, 2 * int(min_child_size)),
         "max_branching": int(max_branching),
         "reg": float(reg),
     }
@@ -2626,8 +2289,6 @@ def _matches_pipeline_warmstart_path(path: Path, pipeline: PipelineSpec) -> bool
         return "lightgbm" in text and "lightgbm_split" not in text
     if pipeline.binning_backend == "lightgbm":
         return "lightgbm" in text
-    if pipeline.name == "cart":
-        return "cart" in text and "lightgbm" not in text
     return True
 
 
@@ -2882,12 +2543,13 @@ def _run_optuna_val_trial_preprocessed(
 ) -> dict[str, float]:
     trial_params = _resolve_trial_params(args, depth_budget, param_overrides, n_fit=int(y_fit.shape[0]))
 
-    binner = _fit_binner(
-        X_fit_proc,
-        y_fit,
-        X_eval_proc,
-        y_eval,
-        trial_params,
+    binner = _fit_or_get_binner(
+        dataset_name=None,
+        X_fit_proc=X_fit_proc,
+        y_fit=y_fit,
+        X_binner_val_proc=X_eval_proc,
+        y_binner_val=y_eval,
+        trial_params=trial_params,
         seed=seed,
         args=args,
         pipeline=pipeline,
@@ -2923,7 +2585,7 @@ def _run_optuna_val_trial_preprocessed(
     )
 
     start = time.time()
-    model.fit(Z_fit, y_fit)
+    model.fit(Z_fit, y_fit, **_teacher_kwargs_from_binner(binner))
     fit_time = time.time() - start
 
     y_pred = model.predict(Z_eval).astype(np.int32)
@@ -3492,6 +3154,9 @@ def _load_history_default_params(
     log_fp,
     pipeline: PipelineSpec,
 ) -> tuple[dict[tuple[str, int], dict[str, Any]], Path | None]:
+    if not bool(getattr(args, "optuna_warmstart_enable", True)):
+        _log("historical default params disabled by optuna_warmstart_enable=False", log_fp)
+        return {}, None
     warmstart_index = _build_optuna_warmstart_index(
         args=args,
         pipeline=pipeline,
@@ -3512,6 +3177,7 @@ def _load_history_default_params(
             if not candidates:
                 continue
             resolved = _resolve_trial_params(args, int(depth_budget), dict(candidates[0]))
+            resolved["lookahead_depth_budget"] = int(min(args.lookahead_cap, max(1, int(depth_budget) - 1)))
             tuned_params[key] = dict(resolved)
 
             row = {
@@ -3633,6 +3299,16 @@ def _build_summary(seed_df: pd.DataFrame, datasets: list[str], depth_budgets: li
                         "mean_greedy_subproblem_calls": np.nan,
                         "mean_greedy_cache_hits": np.nan,
                         "mean_greedy_unique_states": np.nan,
+                        "mean_nominee_unique_total": np.nan,
+                        "mean_nominee_child_interval_lookups": np.nan,
+                        "mean_nominee_child_interval_unique": np.nan,
+                        "mean_nominee_exactified_total": np.nan,
+                        "mean_nominee_incumbent_updates": np.nan,
+                        "mean_nominee_threatening_samples": np.nan,
+                        "mean_nominee_threatening_sum": np.nan,
+                        "mean_nominee_threatening_max": np.nan,
+                        "mean_nominee_exact_child_eval_sec": np.nan,
+                        "mean_nominee_debr_sec": np.nan,
                     }
                 )
                 continue
@@ -3661,6 +3337,26 @@ def _build_summary(seed_df: pd.DataFrame, datasets: list[str], depth_budgets: li
                     "mean_greedy_subproblem_calls": float(np.nanmean(subset["greedy_subproblem_calls"])),
                     "mean_greedy_cache_hits": float(np.nanmean(subset["greedy_cache_hits"])),
                     "mean_greedy_unique_states": float(np.nanmean(subset["greedy_unique_states"])),
+                    "mean_nominee_unique_total": float(np.nanmean(subset["nominee_unique_total"])),
+                    "mean_nominee_child_interval_lookups": float(
+                        np.nanmean(subset["nominee_child_interval_lookups"])
+                    ),
+                    "mean_nominee_child_interval_unique": float(
+                        np.nanmean(subset["nominee_child_interval_unique"])
+                    ),
+                    "mean_nominee_exactified_total": float(np.nanmean(subset["nominee_exactified_total"])),
+                    "mean_nominee_incumbent_updates": float(
+                        np.nanmean(subset["nominee_incumbent_updates"])
+                    ),
+                    "mean_nominee_threatening_samples": float(
+                        np.nanmean(subset["nominee_threatening_samples"])
+                    ),
+                    "mean_nominee_threatening_sum": float(np.nanmean(subset["nominee_threatening_sum"])),
+                    "mean_nominee_threatening_max": float(np.nanmean(subset["nominee_threatening_max"])),
+                    "mean_nominee_exact_child_eval_sec": float(
+                        np.nanmean(subset["nominee_exact_child_eval_sec"])
+                    ),
+                    "mean_nominee_debr_sec": float(np.nanmean(subset["nominee_debr_sec"])),
                 }
             )
 
@@ -3730,17 +3426,6 @@ def _format_depth_log_config(args: argparse.Namespace, pipeline: PipelineSpec) -
         f"REG={args.reg}",
         f"LOOKAHEAD_CAP={args.lookahead_cap}",
         f"MSPLIT_VARIANT={getattr(args, 'msplit_variant', 'rush_dp')}",
-        f"APPROX_MODE={getattr(args, 'approx_mode', False)}",
-        f"PATCH_BUDGET={getattr(args, 'patch_budget_per_feature', 12)}",
-        f"EXACTIFY_TOP_M={getattr(args, 'exactify_top_m', 2)}",
-        f"TAU_MODE={getattr(args, 'tau_mode', 'lambda_sqrt_r')}",
-        f"APPROX_SCAN_LIMIT={getattr(args, 'approx_feature_scan_limit', 0)}",
-        f"APPROX_REF_SHORTLIST_ENABLED={int(bool(getattr(args, 'approx_ref_shortlist_enabled', True)))}",
-        f"APPROX_REF_WIDEN_MAX={getattr(args, 'approx_ref_widen_max', 1)}",
-        f"APPROX_CHALLENGER_SWEEP_ENABLED={int(bool(getattr(args, 'approx_challenger_sweep_enabled', False)))}",
-        f"APPROX_CHALLENGER_SWEEP_MAX_FEATURES={getattr(args, 'approx_challenger_sweep_max_features', 3)}",
-        "APPROX_CHALLENGER_SWEEP_MAX_PATCH_CALLS_PER_NODE="
-        f"{getattr(args, 'approx_challenger_sweep_max_patch_calls_per_node', 0)}",
         f"TIME_LIMIT={args.time_limit}",
     ]
     if pipeline.binning_backend == "lightgbm":
