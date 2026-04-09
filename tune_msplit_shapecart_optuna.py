@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import sys
 import time
@@ -9,6 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
+from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 
 try:
     import optuna
@@ -23,7 +25,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from benchmark_teacher_guided_atomcolor_cached import (
-    _protocol_split_indices,
     _slice_rows,
     derive_min_child_size,
     derive_min_split_size,
@@ -40,10 +41,10 @@ if str(SHAPECART_ROOT) not in sys.path:
 from src.ShapeCARTClassifier import ShapeCARTClassifier  # type: ignore
 
 
-N_TRIALS = 20
+N_TRIALS = 50
+N_FOLDS = 3
 DEFAULT_SEED = 0
-TEST_SIZE = 0.2
-VAL_SIZE = 0.125
+INNER_VAL_FRACTION = 0.3
 MAX_BINS = 1024
 MIN_SAMPLES_LEAF = 8
 LEAF_FRAC = 0.001
@@ -58,6 +59,28 @@ SHAPECART_PAIRWISE_CANDIDATES = 0.0
 
 REG_RANGE = (1e-5, 1e-3)
 MSPLIT_TOP_K_CHOICES = (1, 2, 4, 8, 16)
+
+
+@dataclass(frozen=True)
+class FoldPayload:
+    X_fit_proc: np.ndarray
+    X_val_proc: np.ndarray
+    X_test_proc: np.ndarray
+    Z_fit: np.ndarray
+    Z_val: np.ndarray
+    Z_test: np.ndarray
+    y_fit: np.ndarray
+    y_val: np.ndarray
+    y_test: np.ndarray
+    teacher_logit: np.ndarray
+    teacher_boundary_gain: np.ndarray
+    teacher_boundary_cover: np.ndarray
+    teacher_boundary_value_jump: np.ndarray
+    min_child_size: int
+    min_split_size: int
+    n_fit: int
+    n_val: int
+    n_test: int
 
 
 def _parse_args() -> argparse.Namespace:
@@ -79,6 +102,10 @@ def _accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(np.mean(np.asarray(y_pred, dtype=np.int32) == np.asarray(y_true, dtype=np.int32)))
 
 
+def _mean(values: list[float]) -> float:
+    return float(np.mean(np.asarray(values, dtype=np.float64)))
+
+
 def _run_study(objective, *, seed: int):
     sampler = optuna.samplers.TPESampler(seed=seed)
     study = optuna.create_study(direction="maximize", sampler=sampler)
@@ -93,40 +120,22 @@ def _run_study(objective, *, seed: int):
     return study
 
 
-@lru_cache(maxsize=None)
-def _prepare_dataset(dataset_name: str) -> dict[str, object]:
-    X, y = DATASET_LOADERS[dataset_name]()
-    y_bin = encode_binary_target(y, dataset_name)
-    split_idx = _protocol_split_indices(
-        y_bin=np.asarray(y_bin, dtype=np.int32),
-        seed=DEFAULT_SEED,
-        test_size=TEST_SIZE,
-        val_size=VAL_SIZE,
-    )
-    idx_fit = split_idx["idx_fit"]
-    idx_val = split_idx["idx_val"]
-    idx_test = split_idx["idx_test"]
-
-    X_fit = _slice_rows(X, idx_fit)
-    X_val = _slice_rows(X, idx_val)
-    X_test = _slice_rows(X, idx_test)
-    y_fit = np.asarray(y_bin[idx_fit], dtype=np.int32)
-    y_val = np.asarray(y_bin[idx_val], dtype=np.int32)
-    y_test = np.asarray(y_bin[idx_test], dtype=np.int32)
-
-    pre = make_preprocessor(X_fit)
-    X_fit_proc = np.asarray(pre.fit_transform(X_fit), dtype=np.float32)
-    X_val_proc = np.asarray(pre.transform(X_val), dtype=np.float32)
-    X_test_proc = np.asarray(pre.transform(X_test), dtype=np.float32)
-
-    binner = fit_lightgbm_binner(
+def _fit_binner(
+    X_fit_proc: np.ndarray,
+    y_fit: np.ndarray,
+    X_val_proc: np.ndarray,
+    y_val: np.ndarray,
+    *,
+    seed: int,
+):
+    return fit_lightgbm_binner(
         X_fit_proc,
         y_fit,
         X_val=X_val_proc,
         y_val=y_val,
         max_bins=MAX_BINS,
         min_samples_leaf=MIN_SAMPLES_LEAF,
-        random_state=DEFAULT_SEED,
+        random_state=seed,
         n_estimators=10000,
         num_leaves=255,
         learning_rate=0.05,
@@ -142,54 +151,123 @@ def _prepare_dataset(dataset_name: str) -> dict[str, object]:
         collect_teacher_logit=True,
     )
 
-    resolved_min_child_size = derive_min_child_size(
-        leaf_frac=LEAF_FRAC,
-        n_fit=int(idx_fit.shape[0]),
-    )
-    resolved_min_split_size = derive_min_split_size(
-        leaf_frac=LEAF_FRAC,
-        n_fit=int(idx_fit.shape[0]),
+
+def _make_fold_payload(
+    X,
+    y_bin: np.ndarray,
+    *,
+    idx_fit: np.ndarray,
+    idx_val: np.ndarray,
+    idx_test: np.ndarray,
+    seed: int,
+) -> FoldPayload:
+    X_fit = _slice_rows(X, idx_fit)
+    X_val = _slice_rows(X, idx_val)
+    X_test = _slice_rows(X, idx_test)
+    y_fit = np.asarray(y_bin[idx_fit], dtype=np.int32)
+    y_val = np.asarray(y_bin[idx_val], dtype=np.int32)
+    y_test = np.asarray(y_bin[idx_test], dtype=np.int32)
+
+    pre = make_preprocessor(X_fit)
+    X_fit_proc = np.asarray(pre.fit_transform(X_fit), dtype=np.float32)
+    X_val_proc = np.asarray(pre.transform(X_val), dtype=np.float32)
+    X_test_proc = np.asarray(pre.transform(X_test), dtype=np.float32)
+
+    binner = _fit_binner(
+        X_fit_proc,
+        y_fit,
+        X_val_proc,
+        y_val,
+        seed=seed,
     )
 
-    return {
-        "X_fit_proc": X_fit_proc,
-        "X_val_proc": X_val_proc,
-        "X_test_proc": X_test_proc,
-        "Z_fit": np.asarray(binner.transform(X_fit_proc), dtype=np.int32),
-        "Z_val": np.asarray(binner.transform(X_val_proc), dtype=np.int32),
-        "Z_test": np.asarray(binner.transform(X_test_proc), dtype=np.int32),
-        "y_fit": y_fit,
-        "y_val": y_val,
-        "y_test": y_test,
-        "teacher_logit": np.asarray(getattr(binner, "teacher_train_logit"), dtype=np.float64),
-        "teacher_boundary_gain": np.asarray(getattr(binner, "boundary_gain_per_feature"), dtype=np.float64),
-        "teacher_boundary_cover": np.asarray(getattr(binner, "boundary_cover_per_feature"), dtype=np.float64),
-        "teacher_boundary_value_jump": np.asarray(
+    return FoldPayload(
+        X_fit_proc=X_fit_proc,
+        X_val_proc=X_val_proc,
+        X_test_proc=X_test_proc,
+        Z_fit=np.asarray(binner.transform(X_fit_proc), dtype=np.int32),
+        Z_val=np.asarray(binner.transform(X_val_proc), dtype=np.int32),
+        Z_test=np.asarray(binner.transform(X_test_proc), dtype=np.int32),
+        y_fit=y_fit,
+        y_val=y_val,
+        y_test=y_test,
+        teacher_logit=np.asarray(getattr(binner, "teacher_train_logit"), dtype=np.float64),
+        teacher_boundary_gain=np.asarray(getattr(binner, "boundary_gain_per_feature"), dtype=np.float64),
+        teacher_boundary_cover=np.asarray(getattr(binner, "boundary_cover_per_feature"), dtype=np.float64),
+        teacher_boundary_value_jump=np.asarray(
             getattr(binner, "boundary_value_jump_per_feature"),
             dtype=np.float64,
         ),
-        "min_child_size": int(resolved_min_child_size),
-        "min_split_size": int(resolved_min_split_size),
-        "n_fit": int(idx_fit.shape[0]),
-        "n_val": int(idx_val.shape[0]),
-        "n_test": int(idx_test.shape[0]),
-    }
+        min_child_size=derive_min_child_size(
+            leaf_frac=LEAF_FRAC,
+            n_fit=int(idx_fit.shape[0]),
+        ),
+        min_split_size=derive_min_split_size(
+            leaf_frac=LEAF_FRAC,
+            n_fit=int(idx_fit.shape[0]),
+        ),
+        n_fit=int(idx_fit.shape[0]),
+        n_val=int(idx_val.shape[0]),
+        n_test=int(idx_test.shape[0]),
+    )
+
+
+@lru_cache(maxsize=None)
+def _prepare_folds(dataset_name: str) -> tuple[FoldPayload, ...]:
+    X, y = DATASET_LOADERS[dataset_name]()
+    y_bin = encode_binary_target(y, dataset_name)
+    y_bin = np.asarray(y_bin, dtype=np.int32)
+    all_idx = np.arange(y_bin.shape[0], dtype=np.int32)
+    outer_splitter = StratifiedKFold(
+        n_splits=N_FOLDS,
+        shuffle=True,
+        random_state=DEFAULT_SEED,
+    )
+
+    folds: list[FoldPayload] = []
+    for fold_idx, (idx_trainval, idx_test) in enumerate(outer_splitter.split(all_idx, y_bin)):
+        idx_trainval = np.asarray(idx_trainval, dtype=np.int32)
+        idx_test = np.asarray(idx_test, dtype=np.int32)
+        y_trainval = y_bin[idx_trainval]
+
+        inner_splitter = StratifiedShuffleSplit(
+            n_splits=1,
+            test_size=INNER_VAL_FRACTION,
+            random_state=DEFAULT_SEED + fold_idx + 1,
+        )
+        trainval_rows = np.zeros((idx_trainval.shape[0], 1), dtype=np.int8)
+        idx_fit_rel, idx_val_rel = next(inner_splitter.split(trainval_rows, y_trainval))
+        idx_fit = np.asarray(idx_trainval[idx_fit_rel], dtype=np.int32)
+        idx_val = np.asarray(idx_trainval[idx_val_rel], dtype=np.int32)
+        idx_test = np.asarray(idx_test, dtype=np.int32)
+        folds.append(
+            _make_fold_payload(
+                X,
+                y_bin,
+                idx_fit=idx_fit,
+                idx_val=idx_val,
+                idx_test=idx_test,
+                seed=DEFAULT_SEED + fold_idx,
+            )
+        )
+
+    return tuple(folds)
 
 
 def _fit_msplit_candidate(
-    payload: dict[str, object],
+    payload: FoldPayload,
     *,
     depth: int,
     regularization: float,
     exactify_top_k: int,
 ) -> dict[str, object]:
     libgosdt = load_local_libgosdt()
-    z_fit = np.asarray(payload["Z_fit"], dtype=np.int32)
-    z_val = np.asarray(payload["Z_val"], dtype=np.int32)
-    z_test = np.asarray(payload["Z_test"], dtype=np.int32)
-    y_fit = np.asarray(payload["y_fit"], dtype=np.int32)
-    y_val = np.asarray(payload["y_val"], dtype=np.int32)
-    y_test = np.asarray(payload["y_test"], dtype=np.int32)
+    z_fit = payload.Z_fit
+    z_val = payload.Z_val
+    z_test = payload.Z_test
+    y_fit = payload.y_fit
+    y_val = payload.y_val
+    y_test = payload.y_test
     sample_weight = np.full(z_fit.shape[0], 1.0 / float(max(1, z_fit.shape[0])), dtype=np.float64)
 
     started = time.perf_counter()
@@ -197,15 +275,15 @@ def _fit_msplit_candidate(
         z_fit,
         y_fit,
         sample_weight,
-        np.asarray(payload["teacher_logit"], dtype=np.float64),
-        np.asarray(payload["teacher_boundary_gain"], dtype=np.float64),
-        np.asarray(payload["teacher_boundary_cover"], dtype=np.float64),
-        np.asarray(payload["teacher_boundary_value_jump"], dtype=np.float64),
+        payload.teacher_logit,
+        payload.teacher_boundary_gain,
+        payload.teacher_boundary_cover,
+        payload.teacher_boundary_value_jump,
         int(depth),
         min(int(depth), LOOKAHEAD_DEPTH_CAP),
         float(regularization),
-        int(payload["min_split_size"]),
-        int(payload["min_child_size"]),
+        payload.min_split_size,
+        payload.min_child_size,
         TIME_LIMIT_SECONDS,
         BRANCHING_FACTOR,
         int(exactify_top_k),
@@ -222,24 +300,24 @@ def _fit_msplit_candidate(
 
 
 def _fit_shapecart_candidate(
-    payload: dict[str, object],
+    payload: FoldPayload,
     *,
     depth: int,
     regularization: float,
 ) -> dict[str, object]:
-    X_fit = np.asarray(payload["X_fit_proc"], dtype=np.float32)
-    X_val = np.asarray(payload["X_val_proc"], dtype=np.float32)
-    X_test = np.asarray(payload["X_test_proc"], dtype=np.float32)
-    y_fit = np.asarray(payload["y_fit"], dtype=np.int32)
-    y_val = np.asarray(payload["y_val"], dtype=np.int32)
-    y_test = np.asarray(payload["y_test"], dtype=np.int32)
+    X_fit = payload.X_fit_proc
+    X_val = payload.X_val_proc
+    X_test = payload.X_test_proc
+    y_fit = payload.y_fit
+    y_val = payload.y_val
+    y_test = payload.y_test
 
     model = ShapeCARTClassifier(
         max_depth=int(depth),
-        min_samples_leaf=int(payload["min_child_size"]),
-        min_samples_split=max(2, int(payload["min_split_size"])),
-        inner_min_samples_leaf=int(payload["min_child_size"]),
-        inner_min_samples_split=max(2, int(payload["min_split_size"])),
+        min_samples_leaf=payload.min_child_size,
+        min_samples_split=max(2, payload.min_split_size),
+        inner_min_samples_leaf=payload.min_child_size,
+        inner_min_samples_split=max(2, payload.min_split_size),
         inner_max_depth=SHAPECART_INNER_MAX_DEPTH,
         inner_max_leaf_nodes=SHAPECART_INNER_MAX_LEAF_NODES,
         max_iter=SHAPECART_MAX_ITER,
@@ -266,92 +344,145 @@ def _fit_shapecart_candidate(
     }
 
 
-def _tune_msplit_payload(payload: dict[str, object], depth: int) -> dict[str, object]:
+def _summarize_search(
+    *,
+    depth: int,
+    study,
+    best_params: dict[str, object],
+    fold_results: list[dict[str, object]],
+    search_time_sec: float,
+) -> dict[str, object]:
+    val_scores = [float(result["val_accuracy"]) for result in fold_results]
+    test_scores = [float(result["test_accuracy"]) for result in fold_results]
+    fit_times = [float(result["fit_time_sec"]) for result in fold_results]
+    final_fit_time_sec = float(np.sum(np.asarray(fit_times, dtype=np.float64)))
+    return {
+        "depth": int(depth),
+        "best_params": best_params,
+        "val_accuracy": _mean(val_scores),
+        "test_accuracy": _mean(test_scores),
+        "val_accuracy_by_fold": val_scores,
+        "test_accuracy_by_fold": test_scores,
+        "fit_time_sec_by_fold": fit_times,
+        "fit_time_sec": final_fit_time_sec,
+        "mean_fit_time_sec": _mean(fit_times),
+        "search_time_sec": float(search_time_sec),
+        "total_time_sec": float(search_time_sec + final_fit_time_sec),
+        "optuna_trials": int(len(study.trials)),
+    }
+
+
+def _tune_msplit_payloads(payloads: tuple[FoldPayload, ...], depth: int) -> dict[str, object]:
     def _objective(trial) -> float:
         regularization = trial.suggest_float("regularization", REG_RANGE[0], REG_RANGE[1], log=True)
         exactify_top_k = trial.suggest_categorical("exactify_top_k", MSPLIT_TOP_K_CHOICES)
-        result = _fit_msplit_candidate(
+        fold_val_scores = []
+        for payload in payloads:
+            result = _fit_msplit_candidate(
+                payload,
+                depth=int(depth),
+                regularization=float(regularization),
+                exactify_top_k=int(exactify_top_k),
+            )
+            fold_val_scores.append(float(result["val_accuracy"]))
+        return _mean(fold_val_scores)
+
+    search_started = time.perf_counter()
+    study = _run_study(_objective, seed=DEFAULT_SEED)
+    search_time_sec = time.perf_counter() - search_started
+    best_params = dict(study.best_params)
+    resolved_best_params = {
+        "regularization": float(best_params["regularization"]),
+        "exactify_top_k": int(best_params["exactify_top_k"]),
+    }
+    fold_results = [
+        _fit_msplit_candidate(
             payload,
             depth=int(depth),
-            regularization=float(regularization),
-            exactify_top_k=int(exactify_top_k),
+            regularization=resolved_best_params["regularization"],
+            exactify_top_k=resolved_best_params["exactify_top_k"],
         )
-        return float(result["val_accuracy"])
-
-    study = _run_study(_objective, seed=DEFAULT_SEED)
-    best_params = dict(study.best_params)
-    final_result = _fit_msplit_candidate(
-        payload,
+        for payload in payloads
+    ]
+    return _summarize_search(
         depth=int(depth),
-        regularization=float(best_params["regularization"]),
-        exactify_top_k=int(best_params["exactify_top_k"]),
+        study=study,
+        best_params=resolved_best_params,
+        fold_results=fold_results,
+        search_time_sec=float(search_time_sec),
     )
-    return {
-        "depth": int(depth),
-        "best_params": {
-            "regularization": float(best_params["regularization"]),
-            "exactify_top_k": int(best_params["exactify_top_k"]),
-        },
-        "val_accuracy": float(final_result["val_accuracy"]),
-        "test_accuracy": float(final_result["test_accuracy"]),
-        "fit_time_sec": float(final_result["fit_time_sec"]),
-        "optuna_trials": int(len(study.trials)),
-    }
 
 
 def tune_msplit(dataset: str, depth: int) -> dict[str, object]:
-    return _tune_msplit_payload(_prepare_dataset(dataset), depth)
+    return _tune_msplit_payloads(_prepare_folds(dataset), depth)
 
 
-def _tune_shapecart_payload(payload: dict[str, object], depth: int) -> dict[str, object]:
+def _tune_shapecart_payloads(payloads: tuple[FoldPayload, ...], depth: int) -> dict[str, object]:
     def _objective(trial) -> float:
         regularization = trial.suggest_float("regularization", REG_RANGE[0], REG_RANGE[1], log=True)
-        result = _fit_shapecart_candidate(
+        fold_val_scores = []
+        for payload in payloads:
+            result = _fit_shapecart_candidate(
+                payload,
+                depth=int(depth),
+                regularization=float(regularization),
+            )
+            fold_val_scores.append(float(result["val_accuracy"]))
+        return _mean(fold_val_scores)
+
+    search_started = time.perf_counter()
+    study = _run_study(_objective, seed=DEFAULT_SEED + 1)
+    search_time_sec = time.perf_counter() - search_started
+    best_params = dict(study.best_params)
+    resolved_best_params = {
+        "regularization": float(best_params["regularization"]),
+    }
+    fold_results = [
+        _fit_shapecart_candidate(
             payload,
             depth=int(depth),
-            regularization=float(regularization),
+            regularization=resolved_best_params["regularization"],
         )
-        return float(result["val_accuracy"])
-
-    study = _run_study(_objective, seed=DEFAULT_SEED + 1)
-    best_params = dict(study.best_params)
-    final_result = _fit_shapecart_candidate(
-        payload,
+        for payload in payloads
+    ]
+    return _summarize_search(
         depth=int(depth),
-        regularization=float(best_params["regularization"]),
+        study=study,
+        best_params=resolved_best_params,
+        fold_results=fold_results,
+        search_time_sec=float(search_time_sec),
     )
-    return {
-        "depth": int(depth),
-        "best_params": {
-            "regularization": float(best_params["regularization"]),
-        },
-        "val_accuracy": float(final_result["val_accuracy"]),
-        "test_accuracy": float(final_result["test_accuracy"]),
-        "fit_time_sec": float(final_result["fit_time_sec"]),
-        "optuna_trials": int(len(study.trials)),
-    }
 
 
 def tune_shapecart(dataset: str, depth: int) -> dict[str, object]:
-    return _tune_shapecart_payload(_prepare_dataset(dataset), depth)
+    return _tune_shapecart_payloads(_prepare_folds(dataset), depth)
 
 
 def main() -> int:
     args = _parse_args()
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-    payload = _prepare_dataset(args.dataset)
+    payloads = _prepare_folds(args.dataset)
+    outer_test_fraction = 1.0 / float(N_FOLDS)
+    outer_train_fraction = 1.0 - outer_test_fraction
     result = {
         "dataset": args.dataset,
         "depth": int(args.depth),
-        "split_sizes": {
-            "fit": int(payload["n_fit"]),
-            "val": int(payload["n_val"]),
-            "test": int(payload["n_test"]),
-        },
+        "fold_count": int(len(payloads)),
+        "fit_fraction": float(outer_train_fraction * (1.0 - INNER_VAL_FRACTION)),
+        "val_fraction": float(outer_train_fraction * INNER_VAL_FRACTION),
+        "test_fraction": float(outer_test_fraction),
+        "fold_sizes": [
+            {
+                "fit": payload.n_fit,
+                "val": payload.n_val,
+                "test": payload.n_test,
+            }
+            for payload in payloads
+        ],
         "branching_factor": BRANCHING_FACTOR,
-        "msplit": _tune_msplit_payload(payload, int(args.depth)),
-        "shapecart": _tune_shapecart_payload(payload, int(args.depth)),
+        "msplit": _tune_msplit_payloads(payloads, int(args.depth)),
+        "shapecart": _tune_shapecart_payloads(payloads, int(args.depth)),
     }
     print(json.dumps(result, indent=2))
     if args.json is not None:

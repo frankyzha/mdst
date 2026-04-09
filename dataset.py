@@ -303,6 +303,13 @@ def _fetch_spambase_from_uci() -> tuple[pd.DataFrame, pd.DataFrame]:
     return X_df.reset_index(drop=True), y_binary.to_frame()
 
 
+def _clean_coupon_frame(df: pd.DataFrame) -> pd.DataFrame:
+    drop_cols = [col for col in ["click", "car"] if col in df.columns]
+    if drop_cols:
+        df = df.drop(columns=drop_cols)
+    return df.dropna().reset_index(drop=True)
+
+
 def _fetch_local_csv_dataset(spec: DatasetSpec) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not spec.local_path:
         raise ValueError(f"{spec.name} does not define a local CSV path.")
@@ -311,10 +318,7 @@ def _fetch_local_csv_dataset(spec: DatasetSpec) -> tuple[pd.DataFrame, pd.DataFr
         raise FileNotFoundError(f"Local dataset CSV not found: {csv_path}")
     df = pd.read_csv(csv_path, low_memory=False)
     if spec.name == "coupon":
-        drop_cols = [col for col in ["click", "car"] if col in df.columns]
-        if drop_cols:
-            df = df.drop(columns=drop_cols)
-        df = df.dropna().reset_index(drop=True)
+        df = _clean_coupon_frame(df)
     if df.shape[1] < 2:
         raise ValueError(f"Expected at least one feature and one target column in {csv_path}, got shape {df.shape}.")
     target_col = spec.target_name if spec.target_name in df.columns else df.columns[-1]
