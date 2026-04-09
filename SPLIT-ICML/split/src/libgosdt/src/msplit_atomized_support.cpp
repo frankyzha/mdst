@@ -166,7 +166,7 @@
         if (mode == AtomizedObjectiveMode::kHardLoss) {
             return score.hard_loss;
         }
-        return score.hard_impurity + family1_soft_weight_value_ * score.soft_impurity;
+        return score.hard_impurity + score.soft_impurity;
     }
 
     double atomized_candidate_primary_objective(const AtomizedCandidate &candidate) const {

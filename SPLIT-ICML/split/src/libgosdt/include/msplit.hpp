@@ -182,7 +182,7 @@ FitResult fit(
     int min_child_size,
     double time_limit_seconds,
     int max_branching,
-    double family1_soft_weight
+    int exactify_top_k
 );
 
 nlohmann::json debug_run_atomized_smoke_cases();

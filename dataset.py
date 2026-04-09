@@ -132,6 +132,14 @@ DATASET_SPECS: dict[str, DatasetSpec] = {
         openml_id=1471,
         description="EEG eye state classification.",
     ),
+    "coupon": DatasetSpec(
+        name="coupon",
+        source="local_csv",
+        task="classification",
+        target_name="Y",
+        local_path="datasets/coupon_source.csv",
+        description="Coupon recommendation classification from the in-repo coupon source CSV.",
+    ),
 }
 
 DATASET_ALIASES = {
@@ -139,6 +147,8 @@ DATASET_ALIASES = {
     "bikeshare": "bike_sharing",
     "spam-base": "spambase",
     "eye-movements": "eye-movement",
+    "coupon_source": "coupon",
+    "coupon-source": "coupon",
 }
 
 DEFAULT_DATASETS = tuple(DATASET_SPECS.keys())
@@ -300,6 +310,11 @@ def _fetch_local_csv_dataset(spec: DatasetSpec) -> tuple[pd.DataFrame, pd.DataFr
     if not csv_path.exists():
         raise FileNotFoundError(f"Local dataset CSV not found: {csv_path}")
     df = pd.read_csv(csv_path, low_memory=False)
+    if spec.name == "coupon":
+        drop_cols = [col for col in ["click", "car"] if col in df.columns]
+        if drop_cols:
+            df = df.drop(columns=drop_cols)
+        df = df.dropna().reset_index(drop=True)
     if df.shape[1] < 2:
         raise ValueError(f"Expected at least one feature and one target column in {csv_path}, got shape {df.shape}.")
     target_col = spec.target_name if spec.target_name in df.columns else df.columns[-1]
@@ -496,6 +511,10 @@ def load_eye_movements():
 
 def load_eye_state():
     return load_dataset("eye-state")
+
+
+def load_coupon():
+    return load_dataset("coupon")
 
 
 def _parse_args() -> argparse.Namespace:

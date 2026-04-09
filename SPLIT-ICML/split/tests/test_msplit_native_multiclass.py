@@ -97,3 +97,39 @@ def test_binary_teacher_matrix_matches_scalar_margin():
     assert np.allclose(margin_model.predict_proba(X), matrix_model.predict_proba(X))
     assert abs(margin_model.objective_ - matrix_model.objective_) <= 1e-12
     assert margin_model.tree == matrix_model.tree
+
+
+def test_exactify_top_k_smoke():
+    X = np.array(
+        [
+            [0, 0],
+            [0, 1],
+            [1, 0],
+            [1, 1],
+            [2, 0],
+            [2, 1],
+            [3, 0],
+            [3, 1],
+            [4, 0],
+            [4, 1],
+            [5, 0],
+            [5, 1],
+        ],
+        dtype=np.int32,
+    )
+    y = np.array([0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0], dtype=np.int32)
+    teacher = np.array([-4.0, -3.0, -2.0, 1.0, 2.0, 3.0, 2.5, -1.0, -2.5, 1.5, 3.5, -3.5], dtype=np.float64)
+
+    model = MSPLIT(
+        full_depth_budget=3,
+        lookahead_depth=2,
+        min_child_size=1,
+        min_split_size=2,
+        max_branching=3,
+        exactify_top_k=1,
+        time_limit=10,
+    )
+    model.fit(X, y, teacher_logit=teacher)
+
+    assert model.nominee_elbow_prefix_total_ >= 1
+    assert model.nominee_elbow_prefix_max_ <= 1

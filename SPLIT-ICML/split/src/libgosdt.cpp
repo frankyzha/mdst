@@ -207,7 +207,7 @@ PYBIND11_MODULE(_libgosdt, m) {
            int min_child_size,
            double time_limit_seconds,
            int max_branching,
-           double family1_soft_weight) {
+           int exactify_top_k) {
             if (z.ndim() != 2) {
                 throw std::runtime_error("msplit_fit expects z to be a 2D int array.");
             }
@@ -316,7 +316,7 @@ PYBIND11_MODULE(_libgosdt, m) {
                 min_child_size,
                 time_limit_seconds,
                 max_branching,
-                family1_soft_weight);
+                exactify_top_k);
 
             py::dict out;
             out["tree"] = py::str(solved.tree.dump());
@@ -512,7 +512,7 @@ PYBIND11_MODULE(_libgosdt, m) {
         py::arg("min_child_size"),
         py::arg("time_limit_seconds") = 0.0,
         py::arg("max_branching") = 0,
-        py::arg("family1_soft_weight") = 0.25);
+        py::arg("exactify_top_k") = 0);
 
     m.def(
         "msplit_debug_run_atomized_smoke_cases",

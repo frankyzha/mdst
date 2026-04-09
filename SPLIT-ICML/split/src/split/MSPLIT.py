@@ -68,7 +68,7 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
         lookahead_depth: int | None = None,
         full_depth_budget: int = 5,
         reg: float = 0.01,
-        family1_soft_weight: float = 0.25,
+        exactify_top_k: int | None = None,
         min_child_size: int = 5,
         min_split_size: int | None = None,
         max_branching: int = 0,
@@ -83,7 +83,7 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
         self.lookahead_depth = lookahead_depth
         self.full_depth_budget = full_depth_budget
         self.reg = reg
-        self.family1_soft_weight = family1_soft_weight
+        self.exactify_top_k = exactify_top_k
         self.min_child_size = min_child_size
         self.min_split_size = min_split_size
         self.max_branching = max_branching
@@ -141,6 +141,8 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
             raise ValueError("max_branching must be >= 0 (0 means unlimited)")
         if self.reg < 0:
             raise ValueError("reg must be non-negative")
+        if self.exactify_top_k is not None and int(self.exactify_top_k) < 1:
+            raise ValueError("exactify_top_k must be a positive integer when specified")
 
         if self.lookahead_depth is not None:
             resolved_lookahead_depth = int(self.lookahead_depth)
@@ -175,7 +177,7 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
                     int(self.min_child_size),
                     float(self.time_limit),
                     int(self.max_branching),
-                    float(getattr(self, "family1_soft_weight", 0.25)),
+                    int(self.exactify_top_k) if self.exactify_top_k is not None else 0,
                 )
             finally:
                 if restore_cache_env:

@@ -760,22 +760,27 @@
             node_candidate_lower_bounds.push_back(eval.lower_bound);
             node_candidate_hard_loss.push_back(score.hard_loss);
             node_candidate_impurity_objective.push_back(
-                score.hard_impurity + family1_soft_weight_value_ * score.soft_impurity);
+                score.hard_impurity + score.soft_impurity);
             node_candidate_hard_impurity.push_back(score.hard_impurity);
             node_candidate_soft_impurity.push_back(score.soft_impurity);
             node_candidate_boundary_penalty.push_back(score.boundary_penalty);
             node_candidate_components.push_back((long long)score.components);
         }
         record_node_scale(stats);
-        auto sqrt_exactify_budget = [](size_t candidate_count) -> size_t {
+        auto resolve_exactify_budget = [&](size_t candidate_count) -> size_t {
             if (candidate_count == 0U) {
                 return 0U;
+            }
+            if (exactify_top_k_ > 0) {
+                return std::max<size_t>(
+                    1U,
+                    std::min(candidate_count, static_cast<size_t>(exactify_top_k_)));
             }
             const size_t budget = static_cast<size_t>(
                 std::ceil(std::sqrt(static_cast<double>(candidate_count))));
             return std::max<size_t>(1U, std::min(candidate_count, budget));
         };
-        const size_t exactify_budget_count = sqrt_exactify_budget(nominee_evals.size());
+        const size_t exactify_budget_count = resolve_exactify_budget(nominee_evals.size());
         telemetry.nominee_elbow_prefix_total += static_cast<long long>(exactify_budget_count);
         telemetry.nominee_elbow_prefix_max = std::max(
             telemetry.nominee_elbow_prefix_max,

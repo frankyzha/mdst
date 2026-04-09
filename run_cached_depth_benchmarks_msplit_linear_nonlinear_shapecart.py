@@ -154,12 +154,6 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Override the MSPLIT split-size threshold passed to the cached benchmark.",
     )
-    parser.add_argument(
-        "--msplit-family1-soft-weight",
-        type=float,
-        default=None,
-        help="Override the family1 soft-weight passed to the cached benchmark.",
-    )
     parser.add_argument("--linear-build-dir", type=str, default="build-linear-py")
     parser.add_argument("--nonlinear-build-dir", type=str, default="build-nonlinear-py")
     parser.add_argument("--shape-k", type=int, default=3)
@@ -327,7 +321,6 @@ def _build_msplit_command(
     json_path: Path,
     msplit_min_child_size: int | None = None,
     msplit_min_split_size: int | None = None,
-    msplit_family1_soft_weight: float | None = None,
 ) -> list[str]:
     cmd = [
         sys.executable,
@@ -365,8 +358,6 @@ def _build_msplit_command(
         cmd.extend(["--min-child-size", str(int(msplit_min_child_size))])
     if msplit_min_split_size is not None:
         cmd.extend(["--min-split-size", str(int(msplit_min_split_size))])
-    if msplit_family1_soft_weight is not None:
-        cmd.extend(["--family1-soft-weight", str(float(msplit_family1_soft_weight))])
     return cmd
 
 
@@ -389,7 +380,6 @@ def _run_msplit_variant(
     out_dir: Path,
     msplit_min_child_size: int | None = None,
     msplit_min_split_size: int | None = None,
-    msplit_family1_soft_weight: float | None = None,
 ) -> dict[str, object]:
     tmp_dir = out_dir / "_tmp" / variant
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -413,7 +403,6 @@ def _run_msplit_variant(
         json_path=json_path,
         msplit_min_child_size=msplit_min_child_size,
         msplit_min_split_size=msplit_min_split_size,
-        msplit_family1_soft_weight=msplit_family1_soft_weight,
     )
     env = os.environ.copy()
     env["MSPLIT_BUILD_DIR"] = build_dir
@@ -599,7 +588,6 @@ def main() -> int:
         "reg": float(args.reg),
         "max_branching": int(args.max_branching),
         "lgb_num_threads": int(args.lgb_num_threads),
-        "msplit_family1_soft_weight": None if args.msplit_family1_soft_weight is None else float(args.msplit_family1_soft_weight),
         "msplit_min_child_size": None if args.msplit_min_child_size is None else int(args.msplit_min_child_size),
         "msplit_min_split_size": None if args.msplit_min_split_size is None else int(args.msplit_min_split_size),
         "linear_build_dir": str(args.linear_build_dir),
@@ -693,11 +681,6 @@ def main() -> int:
                     if args.msplit_min_split_size is not None
                     else None
                 ),
-                msplit_family1_soft_weight=(
-                    float(args.msplit_family1_soft_weight)
-                    if args.msplit_family1_soft_weight is not None
-                    else None
-                ),
             )
             long_rows.append({**row_base, **linear_row})
 
@@ -726,11 +709,6 @@ def main() -> int:
                 msplit_min_split_size=(
                     int(args.msplit_min_split_size)
                     if args.msplit_min_split_size is not None
-                    else None
-                ),
-                msplit_family1_soft_weight=(
-                    float(args.msplit_family1_soft_weight)
-                    if args.msplit_family1_soft_weight is not None
                     else None
                 ),
             )

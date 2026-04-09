@@ -420,10 +420,10 @@ def run_cached_msplit(
     depth: int,
     lookahead_depth: int,
     reg: float,
+    exactify_top_k: int | None,
     min_split_size: int,
     min_child_size: int,
     max_branching: int,
-    family1_soft_weight: float,
 ) -> dict[str, object]:
     print("[msplit] starting native atomized fit from cached LightGBM bins", flush=True)
     libgosdt = load_local_libgosdt()
@@ -450,7 +450,7 @@ def run_cached_msplit(
         int(min_child_size),
         28800.0,
         int(max_branching),
-        float(family1_soft_weight),
+        int(exactify_top_k) if exactify_top_k is not None else 0,
     )
     fit_seconds = time.perf_counter() - started
     print(f"[msplit] fit done in {fit_seconds:.3f}s", flush=True)
@@ -513,7 +513,6 @@ def run_cached_msplit(
         "family_soft_impurity_delta_sum": float(cpp_result.get("family_soft_impurity_delta_sum", 0.0)),
         "family2_joint_impurity_wins": int(cpp_result.get("family2_joint_impurity_wins", 0)),
         "family1_hard_loss_inversion_traces": cpp_result.get("family1_hard_loss_inversion_traces", []),
-        "family1_soft_weight": float(cpp_result.get("family1_soft_weight", family1_soft_weight)),
         "teacher_available": bool(cpp_result.get("teacher_available", False)),
         "n_classes": int(cpp_result.get("n_classes", 0)),
         "teacher_class_count": int(cpp_result.get("teacher_class_count", 0)),
@@ -775,16 +774,10 @@ def main() -> int:
     parser.add_argument("--max-branching", type=int, default=3)
     parser.add_argument("--reg", type=float, default=0.0005)
     parser.add_argument(
-        "--family1-objective",
-        choices=["impurity", "teacher_soft", "impurity_plus_teacher"],
-        default="impurity",
-        help="Legacy objective selector kept for compatibility.",
-    )
-    parser.add_argument(
-        "--family1-soft-weight",
-        type=float,
+        "--exactify-top-k",
+        type=int,
         default=None,
-        help="Weight on teacher soft impurity added to hard impurity; overrides --family1-objective when set.",
+        help="If set, exactify at most this many shortlisted candidates per node above lookahead depth.",
     )
     parser.add_argument("--lgb-num-threads", type=int, default=3)
     parser.add_argument("--cache-path", type=Path, default=None)
@@ -796,6 +789,8 @@ def main() -> int:
     )
     parser.add_argument("--json", type=Path, default=None)
     args = parser.parse_args()
+    if args.exactify_top_k is not None and int(args.exactify_top_k) < 1:
+        raise ValueError("--exactify-top-k must be a positive integer when specified")
 
     preview_X, preview_y = DATASET_LOADERS[args.dataset]()
     preview_y_bin = encode_binary_target(preview_y, args.dataset)
@@ -813,15 +808,6 @@ def main() -> int:
     if resolved_min_split_size <= 0:
         resolved_min_split_size = derive_min_split_size(leaf_frac=float(args.leaf_frac), n_fit=n_fit)
 
-    if args.family1_soft_weight is None:
-        family1_soft_weight_map = {
-            "impurity": 0.25,
-            "teacher_soft": 1.0,
-            "impurity_plus_teacher": 1.0,
-        }
-        family1_soft_weight = float(family1_soft_weight_map[args.family1_objective])
-    else:
-        family1_soft_weight = float(args.family1_soft_weight)
     cache_path = args.cache_path
     if cache_path is None:
         cache_path = default_cache_path(
@@ -872,10 +858,10 @@ def main() -> int:
         depth=args.depth,
         lookahead_depth=args.lookahead_depth,
         reg=args.reg,
+        exactify_top_k=args.exactify_top_k,
         min_split_size=resolved_min_split_size,
         min_child_size=resolved_min_child_size,
         max_branching=args.max_branching,
-        family1_soft_weight=family1_soft_weight,
     )
     result.update(
         {
@@ -890,8 +876,9 @@ def main() -> int:
             "lookahead_depth": int(args.lookahead_depth),
             "n_fit": int(n_fit),
             "reg": float(args.reg),
-            "family1_objective": args.family1_objective,
-            "family1_soft_weight": float(family1_soft_weight),
+            "exactify_top_k": (
+                int(args.exactify_top_k) if args.exactify_top_k is not None else None
+            ),
         }
     )
     print(json.dumps(result, indent=2))

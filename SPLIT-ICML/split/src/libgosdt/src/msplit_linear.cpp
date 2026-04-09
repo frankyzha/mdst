@@ -397,13 +397,11 @@
                                     const double primary_before = hard_loss_mode
                                         ? (source_loss_before + target_loss_before)
                                         : (source_hard_before + target_hard_before +
-                                           family1_soft_weight_value_ *
-                                               (source_soft_before + target_soft_before));
+                                           source_soft_before + target_soft_before);
                                     const double primary_after = hard_loss_mode
                                         ? (source_loss_after + target_loss_after)
                                         : (source_hard_after + target_hard_after +
-                                           family1_soft_weight_value_ *
-                                               (source_soft_after + target_soft_after));
+                                           source_soft_after + target_soft_after);
                                     const double guide_before = hard_loss_mode
                                         ? (source_hard_before + target_hard_before)
                                         : (source_loss_before + target_loss_before);
@@ -639,11 +637,9 @@
                                         ? ((source_loss_before + target_loss_before) -
                                            (source_loss_after + target_loss_after))
                                         : ((source_hard_before + target_hard_before +
-                                            family1_soft_weight_value_ *
-                                                (source_soft_before + target_soft_before)) -
+                                            source_soft_before + target_soft_before) -
                                            (source_hard_after + target_hard_after +
-                                            family1_soft_weight_value_ *
-                                                (source_soft_after + target_soft_after)));
+                                            source_soft_after + target_soft_after));
                                     const double guide_gain = hard_loss_mode
                                         ? ((source_hard_before + target_hard_before +
                                             source_soft_before + target_soft_before) -

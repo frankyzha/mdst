@@ -143,7 +143,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--shapecart-max-iter", type=int, default=10)
 
     parser.add_argument("--msplit-reg", type=float, default=0.0)
-    parser.add_argument("--msplit-family1-soft-weight", type=float, default=1.0)
     parser.add_argument("--msplit-leaf-frac", type=float, default=0.001)
     parser.add_argument("--msplit-max-branching", type=int, default=0)
     parser.add_argument("--msplit-time-limit", type=int, default=10)
@@ -653,7 +652,6 @@ def _fit_msplit_model(
         full_depth_budget=int(depth),
         lookahead_depth=resolved_lookahead_depth,
         reg=float(args.msplit_reg),
-        family1_soft_weight=float(args.msplit_family1_soft_weight),
         min_split_size=int(derived_min_split),
         min_child_size=int(derived_min_child),
         max_branching=int(args.shapecart_k),

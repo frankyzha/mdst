@@ -396,7 +396,7 @@ class Solver {
         int min_child_size,
         double time_limit_seconds,
         int max_branching,
-        double family1_soft_weight
+        int exactify_top_k
     )
         : x_flat_(x_flat),
           n_rows_(n_rows),
@@ -416,7 +416,7 @@ class Solver {
           min_child_size_(min_child_size),
           time_limit_seconds_(time_limit_seconds),
           max_branching_(max_branching),
-          family1_soft_weight_value_(family1_soft_weight),
+          exactify_top_k_(exactify_top_k),
           atomized_telemetry_(
               debr_refine_calls_,
               debr_refine_improved_,
@@ -559,6 +559,9 @@ class Solver {
             std::max(1, std::min(full_depth_budget_, requested_lookahead_depth));
         if (regularization_ < 0.0) {
             throw std::invalid_argument("MSPLIT regularization must be non-negative.");
+        }
+        if (exactify_top_k_ < 0) {
+            throw std::invalid_argument("MSPLIT exactify_top_k must be non-negative.");
         }
         if (min_child_size_ < 1) {
             throw std::invalid_argument("MSPLIT min_child_size must be at least 1.");
@@ -821,7 +824,7 @@ class Solver {
     int min_child_size_;
     double time_limit_seconds_;
     int max_branching_;
-    double family1_soft_weight_value_ = 0.25;
+    int exactify_top_k_ = 0;
     bool disable_coarse_pruning_ = env_flag_enabled("MSPLIT_DISABLE_COARSE_PRUNING");
 
     long long greedy_internal_nodes_ = 0;
@@ -1708,7 +1711,7 @@ FitResult fit(
     int min_child_size,
     double time_limit_seconds,
     int max_branching,
-    double family1_soft_weight
+    int exactify_top_k
 ) {
     Solver solver(
         x_flat,
@@ -1729,7 +1732,7 @@ FitResult fit(
         min_child_size,
         time_limit_seconds,
         max_branching,
-        family1_soft_weight);
+        exactify_top_k);
     return solver.fit();
 }
 
@@ -1782,7 +1785,7 @@ nlohmann::json debug_run_atomized_smoke_cases() {
             min_child_size,
             5.0,
             max_branching,
-            0.25);
+            0);
         return nlohmann::json{
             {"name", name},
             {"objective", result.objective},
