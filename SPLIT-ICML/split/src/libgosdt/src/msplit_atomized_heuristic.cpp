@@ -1,5 +1,4 @@
     std::vector<AtomizedCandidate> select_atomized_candidates_for_arity(
-        int feature,
         const PreparedFeatureAtomized &prepared,
         int groups,
         double mu_node
@@ -13,40 +12,13 @@
             return selected;
         }
 
-        const AtomizedCoarseCandidate &impurity_coarse = prepared.coarse_by_groups[(size_t)groups];
-        const AtomizedCoarseCandidate *hardloss_coarse_ptr =
-            use_dual_families ? &prepared.coarse_by_groups_hardloss[(size_t)groups] : nullptr;
-        AtomizedCandidate impurity_raw_seed;
-        AtomizedCandidate misclassification_raw_seed_storage;
-        const AtomizedCandidate *impurity_raw_seed_ptr = nullptr;
-        const AtomizedCandidate *misclassification_raw_seed = nullptr;
-        if (use_dual_families) {
-            const AtomizedCandidatePair raw_seed_pair = solve_atomized_geometry_family_pair(
-                prepared.atoms,
-                prepared.atom_prefix,
-                feature,
-                groups);
-            impurity_raw_seed = raw_seed_pair.impurity;
-            misclassification_raw_seed_storage = raw_seed_pair.misclassification;
-            impurity_raw_seed_ptr = &impurity_raw_seed;
-            misclassification_raw_seed = &misclassification_raw_seed_storage;
-        } else {
-            impurity_raw_seed = solve_atomized_geometry_family(
-                prepared.atoms,
-                prepared.atom_prefix,
-                feature,
-                groups,
-                AtomizedObjectiveMode::kImpurity);
-            impurity_raw_seed_ptr = &impurity_raw_seed;
-        }
+        const AtomizedCandidate &impurity_raw_seed =
+            prepared.coarse_by_groups[(size_t)groups].geometry_seed_candidate;
         AtomizedCandidate impurity = nominate_folded_family_candidate(
-            feature,
             prepared,
-            groups,
             mu_node,
-            impurity_coarse,
-            AtomizedObjectiveMode::kImpurity,
-            impurity_raw_seed_ptr);
+            impurity_raw_seed,
+            AtomizedObjectiveMode::kImpurity);
         if (!use_dual_families) {
             if (impurity.feasible) {
                 ++const_cast<Solver *>(this)->debr_final_geo_wins_;
@@ -55,14 +27,13 @@
             return selected;
         }
 
+        const AtomizedCandidate &misclassification_raw_seed =
+            prepared.coarse_by_groups_hardloss[(size_t)groups].geometry_seed_candidate;
         AtomizedCandidate misclassification = nominate_folded_family_candidate(
-            feature,
             prepared,
-            groups,
             mu_node,
-            *hardloss_coarse_ptr,
-            AtomizedObjectiveMode::kHardLoss,
-            misclassification_raw_seed);
+            misclassification_raw_seed,
+            AtomizedObjectiveMode::kHardLoss);
 
         if (impurity.feasible && misclassification.feasible) {
             selected = select_family_nominees(std::move(impurity), std::move(misclassification));
@@ -233,11 +204,7 @@
             PreparedFeatureAtomized prepared;
             {
                 ScopedTimer feature_timer(profiling_feature_prepare_sec_);
-                if (!prepare_feature_atomized_local(
-                        indices,
-                        feature,
-                        mu_node,
-                        prepared)) {
+                if (!prepare_feature_atomized_local(indices, feature, mu_node, prepared)) {
                     continue;
                 }
             }
@@ -353,7 +320,6 @@
                 continue;
             }
             std::vector<AtomizedCandidate> candidates = select_atomized_candidates_for_arity(
-                eval.feature,
                 prepared,
                 eval.groups,
                 mu_node);
@@ -370,7 +336,19 @@
                 NomineeEval nominee;
                 nominee.feature = eval.feature;
                 nominee.groups = eval.groups;
-                nominee.cheap_score = eval.cheap_score;
+                const bool hard_loss_mode = candidate.hard_loss_mode;
+                const AtomizedObjectiveMode nominee_mode = hard_loss_mode
+                    ? AtomizedObjectiveMode::kHardLoss
+                    : AtomizedObjectiveMode::kImpurity;
+                const auto &family_coarse = hard_loss_mode
+                    ? prepared.coarse_by_groups_hardloss[(size_t)eval.groups]
+                    : prepared.coarse_by_groups[(size_t)eval.groups];
+                nominee.cheap_score = family_coarse.candidate.feasible
+                    ? atomized_score_proxy(
+                        family_coarse.candidate.score,
+                        mu_node,
+                        nominee_mode)
+                    : eval.cheap_score;
                 nominee.cheap_lower_bound = eval.cheap_lower_bound;
                 const std::string signature_key = make_signature_key(
                     nominee.feature,
@@ -781,6 +759,34 @@
                         impurity_indices.push_back(idx);
                     }
                 }
+
+                auto prune_bucket_by_proxy = [&](std::vector<size_t> &bucket) {
+                    if (bucket.empty()) {
+                        return;
+                    }
+                    const bool hard_loss_bucket =
+                        nominee_evals[bucket.front()].candidate.hard_loss_mode;
+                    double best_bucket_proxy = kInfinity;
+                    for (size_t idx : bucket) {
+                        best_bucket_proxy = std::min(best_bucket_proxy, nominee_evals[idx].cheap_score);
+                    }
+                    if (!std::isfinite(best_bucket_proxy)) {
+                        return;
+                    }
+                    const double bucket_slack = hard_loss_bucket ? (2.0 * mu_node) : mu_node;
+                    const double bucket_cutoff = best_bucket_proxy + bucket_slack + kEpsUpdate;
+                    std::vector<size_t> survivors;
+                    survivors.reserve(bucket.size());
+                    for (size_t idx : bucket) {
+                        if (nominee_evals[idx].cheap_score <= bucket_cutoff) {
+                            survivors.push_back(idx);
+                        }
+                    }
+                    bucket.swap(survivors);
+                };
+
+                prune_bucket_by_proxy(impurity_indices);
+                prune_bucket_by_proxy(hardloss_indices);
 
                 std::stable_sort(
                     impurity_indices.begin(),

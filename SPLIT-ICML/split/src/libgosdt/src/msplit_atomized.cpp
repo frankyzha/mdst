@@ -1429,59 +1429,66 @@
         const PreparedFeatureAtomized &prepared,
         int groups,
         double mu_node,
+        const AtomizedCandidate &raw_seed,
         AtomizedObjectiveMode mode
     ) const {
         AtomizedCoarseCandidate coarse;
-        if (groups < 2 || groups > prepared.q_effective) {
+        if (!raw_seed.feasible || groups < 2 || groups > prepared.q_effective) {
             return coarse;
         }
+
+        coarse.geometry_seed_candidate = raw_seed;
         if (!prepared.has_block_compression) {
-            AtomizedCandidate coarse_seed = solve_atomized_geometry_family(
-                prepared.atoms,
-                prepared.atom_prefix,
-                feature,
-                groups,
-                mode);
-            coarse_seed.feature = feature;
-            if (coarse_seed.feasible) {
-                coarse.geometry_seed_candidate = coarse_seed;
-                coarse.initial_block_assignment = coarse_seed.assignment;
-                coarse.refined_block_assignment = coarse_seed.assignment;
-                coarse.candidate = coarse_seed;
-            }
+            coarse.candidate = raw_seed;
             return coarse;
         }
         if (groups > (int)prepared.block_atoms.size()) {
             return coarse;
         }
 
-        AtomizedCandidate block_seed = solve_atomized_geometry_family(
+        std::vector<int> projected_block_assignment;
+        std::vector<unsigned char> mixed_block;
+        if (!project_atom_assignment_to_blocks(
+                prepared.blocks,
+                prepared.atoms,
+                raw_seed.assignment,
+                projected_block_assignment,
+                mixed_block)) {
+            return coarse;
+        }
+        if (std::any_of(mixed_block.begin(), mixed_block.end(), [](unsigned char flag) { return flag != 0U; })) {
+            return coarse;
+        }
+        coarse.initial_block_assignment = projected_block_assignment;
+
+        AtomizedCandidate projected_block_seed = candidate_from_assignment(
+            feature,
             prepared.block_atoms,
-            prepared.block_prefix,
-            -1,
-            groups,
+            projected_block_assignment,
+            raw_seed.groups,
+            nullptr,
+            0.0,
             mode);
-        if (!block_seed.feasible) {
+        if (!projected_block_seed.feasible) {
             return coarse;
         }
 
-        coarse.geometry_seed_candidate = lift_block_candidate_to_atoms(
+        AtomizedCandidate lifted_projected_block = lift_block_candidate_to_atoms(
             feature,
             prepared.blocks,
             prepared.atoms,
-            block_seed,
+            projected_block_seed,
             &prepared.atom_adjacency_bonus,
             prepared.atom_adjacency_bonus_total,
             mode);
-        if (!coarse.geometry_seed_candidate.feasible) {
-            return AtomizedCoarseCandidate{};
+        if (lifted_projected_block.feasible) {
+            coarse.candidate = lifted_projected_block;
         }
 
-        coarse.initial_block_assignment = block_seed.assignment;
         AtomizedRefinementSummary block_summary;
         AtomizedCandidate refined_block = refine_atomized_candidate_debr(
             prepared.block_atoms,
-            block_seed,
+            projected_block_seed,
             mu_node,
             nullptr,
             &block_summary,
@@ -1489,8 +1496,11 @@
             0.0,
             mode);
         record_refinement_summary(block_summary);
-
+        if (!refined_block.feasible) {
+            refined_block = projected_block_seed;
+        }
         coarse.refined_block_assignment = refined_block.assignment;
+
         coarse.block_candidate = lift_block_candidate_to_atoms(
             feature,
             prepared.blocks,
@@ -1499,7 +1509,6 @@
             &prepared.atom_adjacency_bonus,
             prepared.atom_adjacency_bonus_total,
             mode);
-        coarse.candidate = coarse.geometry_seed_candidate;
         if (coarse.block_candidate.feasible &&
             atomized_candidate_better_for_objective(
                 coarse.block_candidate,
@@ -1603,27 +1612,58 @@
         const bool use_dual_families = atomized_use_dual_families();
         bool any_feasible = false;
         for (int groups = 2; groups <= prepared.q_effective; ++groups) {
-            AtomizedCoarseCandidate coarse = prepare_folded_family_coarse(
-                feature,
-                prepared,
-                groups,
-                mu_node,
-                AtomizedObjectiveMode::kImpurity);
-            AtomizedCoarseCandidate hardloss_coarse;
             if (use_dual_families) {
-                hardloss_coarse = prepare_folded_family_coarse(
+                const AtomizedCandidatePair raw_seed_pair = solve_atomized_geometry_family_pair(
+                    prepared.atoms,
+                    prepared.atom_prefix,
+                    feature,
+                    groups);
+                AtomizedCandidate impurity_raw_seed = raw_seed_pair.impurity;
+                AtomizedCandidate hardloss_raw_seed = raw_seed_pair.misclassification;
+                impurity_raw_seed.feature = feature;
+                impurity_raw_seed.hard_loss_mode = false;
+                hardloss_raw_seed.feature = feature;
+                hardloss_raw_seed.hard_loss_mode = true;
+
+                AtomizedCoarseCandidate coarse = prepare_folded_family_coarse(
                     feature,
                     prepared,
                     groups,
                     mu_node,
+                    impurity_raw_seed,
+                    AtomizedObjectiveMode::kImpurity);
+                AtomizedCoarseCandidate hardloss_coarse = prepare_folded_family_coarse(
+                    feature,
+                    prepared,
+                    groups,
+                    mu_node,
+                    hardloss_raw_seed,
                     AtomizedObjectiveMode::kHardLoss);
-            }
-            if (!coarse.candidate.feasible && (!use_dual_families || !hardloss_coarse.candidate.feasible)) {
-                continue;
-            }
-            prepared.coarse_by_groups[(size_t)groups] = std::move(coarse);
-            if (use_dual_families) {
+                if (!coarse.candidate.feasible && !hardloss_coarse.candidate.feasible) {
+                    continue;
+                }
+                prepared.coarse_by_groups[(size_t)groups] = std::move(coarse);
                 prepared.coarse_by_groups_hardloss[(size_t)groups] = std::move(hardloss_coarse);
+            } else {
+                AtomizedCandidate impurity_raw_seed = solve_atomized_geometry_family(
+                    prepared.atoms,
+                    prepared.atom_prefix,
+                    feature,
+                    groups,
+                    AtomizedObjectiveMode::kImpurity);
+                impurity_raw_seed.feature = feature;
+                impurity_raw_seed.hard_loss_mode = false;
+                AtomizedCoarseCandidate coarse = prepare_folded_family_coarse(
+                    feature,
+                    prepared,
+                    groups,
+                    mu_node,
+                    impurity_raw_seed,
+                    AtomizedObjectiveMode::kImpurity);
+                if (!coarse.candidate.feasible) {
+                    continue;
+                }
+                prepared.coarse_by_groups[(size_t)groups] = std::move(coarse);
             }
             ++telemetry.atomized_coarse_candidates;
             any_feasible = true;
@@ -1634,122 +1674,51 @@
     }
 
     AtomizedCandidate nominate_folded_family_candidate(
-        int feature,
         const PreparedFeatureAtomized &prepared,
-        int groups,
         double mu_node,
-        const AtomizedCoarseCandidate &coarse,
-        AtomizedObjectiveMode mode,
-        const AtomizedCandidate *raw_seed_override = nullptr
+        AtomizedCandidate raw_seed,
+        AtomizedObjectiveMode mode
     ) const {
-        AtomizedCandidate best;
-        if (coarse.geometry_seed_candidate.feasible) {
-            best = coarse.geometry_seed_candidate;
-        }
-        if (coarse.block_candidate.feasible &&
-            atomized_candidate_better_for_objective(
-                coarse.block_candidate,
-                best,
-                feature,
-                feature,
-                mode)) {
-            best = coarse.block_candidate;
-        }
-
-        AtomizedCandidate raw_seed;
-        if (raw_seed_override != nullptr && raw_seed_override->feasible) {
-            raw_seed = *raw_seed_override;
-            raw_seed.feature = feature;
-        } else if (!prepared.has_block_compression && coarse.geometry_seed_candidate.feasible) {
-            raw_seed = coarse.geometry_seed_candidate;
-        } else {
-            raw_seed = solve_atomized_geometry_family(
-                prepared.atoms,
-                prepared.atom_prefix,
-                feature,
-                groups,
-                mode);
-            raw_seed.feature = feature;
-        }
-        if (raw_seed.feasible) {
-            best = raw_seed;
-        }
-        if (coarse.block_candidate.feasible &&
-            atomized_candidate_better_for_objective(
-                coarse.block_candidate,
-                best,
-                feature,
-                feature,
-                mode)) {
-            best = coarse.block_candidate;
-        }
         if (!raw_seed.feasible) {
-            return best;
+            return raw_seed;
         }
-        if (!prepared.has_block_compression || prepared.block_atoms.empty()) {
-            AtomizedRefinementSummary raw_summary;
-            const AtomizedCandidate refined = refine_atomized_candidate_debr(
-                prepared.atoms,
-                raw_seed,
-                mu_node,
-                nullptr,
-                &raw_summary,
-                &prepared.atom_adjacency_bonus,
-                prepared.atom_adjacency_bonus_total,
-                mode);
-            record_refinement_summary(raw_summary);
-
-            AtomizedCandidate geometry_candidate = raw_seed;
-            if (refined.feasible &&
-                atomized_score_better_for_refinement(refined.score, raw_seed.score, mu_node, mode)) {
-                geometry_candidate = refined;
-            }
-            if (atomized_candidate_better_for_objective(
-                    geometry_candidate,
-                    best,
-                    feature,
-                    feature,
-                    mode)) {
-                best = geometry_candidate;
-            }
-            return best;
+        if (prepared.has_block_compression &&
+            (!prepared.block_atoms.empty()) &&
+            raw_seed.groups > (int)prepared.block_atoms.size()) {
+            return AtomizedCandidate{};
         }
-
-        std::vector<int> projected_block_assignment;
-        std::vector<unsigned char> mixed_block;
-        if (!project_atom_assignment_to_blocks(
-                prepared.blocks,
-                raw_seed.assignment,
-                projected_block_assignment,
-                mixed_block)) {
-            return best;
-        }
-
-        std::vector<int> refined_block_assignment = projected_block_assignment;
-        if (groups <= (int)prepared.block_atoms.size()) {
-            const bool can_reuse_initial =
-                !coarse.initial_block_assignment.empty() &&
-                coarse.initial_block_assignment.size() == projected_block_assignment.size() &&
-                coarse.refined_block_assignment.size() == projected_block_assignment.size() &&
-                projected_block_assignment == coarse.initial_block_assignment;
-            const bool can_reuse_refined =
-                !coarse.refined_block_assignment.empty() &&
-                coarse.refined_block_assignment.size() == projected_block_assignment.size() &&
-                projected_block_assignment == coarse.refined_block_assignment;
-            if (can_reuse_initial || can_reuse_refined) {
-                refined_block_assignment = coarse.refined_block_assignment;
-            } else {
+        AtomizedCandidate atom_seed = raw_seed;
+        std::vector<std::pair<int, int>> atom_windows;
+        const std::vector<std::pair<int, int>> *atom_windows_ptr = nullptr;
+        bool used_block_refinement = false;
+        if (prepared.has_block_compression &&
+            !prepared.block_atoms.empty() &&
+            raw_seed.groups <= (int)prepared.block_atoms.size()) {
+            std::vector<int> projected_block_assignment;
+            std::vector<unsigned char> mixed_block;
+            if (project_atom_assignment_to_blocks(
+                    prepared.blocks,
+                    prepared.atoms,
+                    raw_seed.assignment,
+                    projected_block_assignment,
+                    mixed_block)) {
+                if (std::any_of(
+                        mixed_block.begin(),
+                        mixed_block.end(),
+                        [](unsigned char flag) { return flag != 0U; })) {
+                    return AtomizedCandidate{};
+                }
                 AtomizedCandidate projected_block_seed = candidate_from_assignment(
-                    feature,
+                    raw_seed.feature,
                     prepared.block_atoms,
                     projected_block_assignment,
-                    groups,
+                    raw_seed.groups,
                     nullptr,
                     0.0,
                     mode);
                 if (projected_block_seed.feasible) {
                     AtomizedRefinementSummary block_summary;
-                    const AtomizedCandidate refined_block = refine_atomized_candidate_debr(
+                    AtomizedCandidate refined_block = refine_atomized_candidate_debr(
                         prepared.block_atoms,
                         projected_block_seed,
                         mu_node,
@@ -1759,43 +1728,62 @@
                         0.0,
                         mode);
                     record_refinement_summary(block_summary);
-                    refined_block_assignment = refined_block.assignment;
+                    if (!refined_block.feasible) {
+                        refined_block = projected_block_seed;
+                    }
+                    used_block_refinement = true;
+                    std::vector<std::pair<int, int>> block_windows =
+                        build_active_block_windows(
+                            projected_block_assignment,
+                            refined_block.assignment,
+                            &mixed_block);
+                    if (!block_windows.empty()) {
+                        atom_windows = block_windows_to_atom_windows(
+                            prepared.blocks,
+                            block_windows);
+                        if (!atom_windows.empty()) {
+                            atom_windows_ptr = &atom_windows;
+                        }
+                    }
+                    AtomizedCandidate lifted_atom_seed = lift_block_candidate_to_atoms(
+                        raw_seed.feature,
+                        prepared.blocks,
+                        prepared.atoms,
+                        refined_block,
+                        &prepared.atom_adjacency_bonus,
+                        prepared.atom_adjacency_bonus_total,
+                        mode);
+                    if (lifted_atom_seed.feasible) {
+                        atom_seed = std::move(lifted_atom_seed);
+                    }
+                } else {
+                    return AtomizedCandidate{};
                 }
+            } else {
+                return AtomizedCandidate{};
             }
         }
 
-        std::vector<std::pair<int, int>> block_windows =
-            build_active_block_windows(projected_block_assignment, refined_block_assignment, &mixed_block);
-        if (block_windows.empty()) {
-            return best;
+        if (used_block_refinement && atom_windows_ptr == nullptr) {
+            return atom_seed;
         }
 
-        const std::vector<std::pair<int, int>> atom_windows =
-            block_windows_to_atom_windows(prepared.blocks, block_windows);
+        AtomizedCandidate best = atom_seed;
         AtomizedRefinementSummary raw_summary;
         const AtomizedCandidate refined = refine_atomized_candidate_debr(
             prepared.atoms,
-            raw_seed,
+            atom_seed,
             mu_node,
-            &atom_windows,
+            atom_windows_ptr,
             &raw_summary,
             &prepared.atom_adjacency_bonus,
             prepared.atom_adjacency_bonus_total,
             mode);
         record_refinement_summary(raw_summary);
 
-        AtomizedCandidate geometry_candidate = raw_seed;
         if (refined.feasible &&
-            atomized_score_better_for_refinement(refined.score, raw_seed.score, mu_node, mode)) {
-            geometry_candidate = refined;
-        }
-        if (atomized_candidate_better_for_objective(
-                geometry_candidate,
-                best,
-                feature,
-                feature,
-                mode)) {
-            best = geometry_candidate;
+            atomized_score_better_for_refinement(refined.score, atom_seed.score, mu_node, mode)) {
+            best = refined;
         }
         return best;
     }

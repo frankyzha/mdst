@@ -1441,6 +1441,7 @@
 
     static bool project_atom_assignment_to_blocks(
         const std::vector<AtomizedBlock> &blocks,
+        const std::vector<AtomizedAtom> &atoms,
         const std::vector<int> &atom_assignment,
         std::vector<int> &block_assignment,
         std::vector<unsigned char> &mixed_block
@@ -1452,13 +1453,32 @@
             if (positions.empty()) {
                 return false;
             }
-            const int first_group = atom_assignment[(size_t)positions.front()];
-            if (first_group < 0) {
+            std::unordered_map<int, int> group_rows;
+            int selected_group = -1;
+            int selected_rows = -1;
+            for (int atom_pos : positions) {
+                if (atom_pos < 0 || atom_pos >= (int)atom_assignment.size() ||
+                    atom_pos >= (int)atoms.size()) {
+                    return false;
+                }
+                const int group_idx = atom_assignment[(size_t)atom_pos];
+                if (group_idx < 0) {
+                    return false;
+                }
+                const int rows = std::max(1, atoms[(size_t)atom_pos].row_count);
+                int &group_total = group_rows[group_idx];
+                group_total += rows;
+                if (group_total > selected_rows) {
+                    selected_rows = group_total;
+                    selected_group = group_idx;
+                }
+            }
+            if (selected_group < 0) {
                 return false;
             }
-            block_assignment[block_idx] = first_group;
+            block_assignment[block_idx] = selected_group;
             for (int atom_pos : positions) {
-                if (atom_assignment[(size_t)atom_pos] != first_group) {
+                if (atom_assignment[(size_t)atom_pos] != selected_group) {
                     mixed_block[block_idx] = 1;
                     break;
                 }
