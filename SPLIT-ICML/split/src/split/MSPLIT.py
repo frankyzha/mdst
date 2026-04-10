@@ -283,7 +283,7 @@ class MultiLeaf:
     prediction: int
     loss: float
     n_samples: int
-    class_counts: Tuple[int, int]
+    class_counts: Tuple[int, ...]
 
 
 @dataclass
@@ -386,7 +386,7 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
         self.upper_bound_ = float(cpp_result.get("upperbound", objective_value))
         self.native_n_classes_ = int(cpp_result.get("native_n_classes", class_count))
         self.native_teacher_class_count_ = int(cpp_result.get("native_teacher_class_count", 0))
-        self.native_binary_mode_ = int(cpp_result.get("native_binary_mode", int(class_count == 2)))
+        self.native_binary_mode_ = bool(cpp_result.get("native_binary_mode", int(class_count == 2)))
 
         self._assign_scalar_metrics(cpp_result, _NATIVE_INT_METRIC_KEYS, int, default_value=0)
         self._assign_scalar_metrics(cpp_result, _NATIVE_FLOAT_METRIC_KEYS, float, default_value=0.0)
@@ -407,7 +407,7 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
     def _reset_solver_diagnostics(self, *, class_count: int) -> None:
         self.native_n_classes_ = int(class_count)
         self.native_teacher_class_count_ = 0
-        self.native_binary_mode_ = int(class_count == 2)
+        self.native_binary_mode_ = bool(class_count == 2)
 
         for key in _NATIVE_INT_METRIC_KEYS:
             setattr(self, f"{key}_", 0)
@@ -555,10 +555,35 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
             raise ValueError("Binned input must be non-negative integer values")
         preds = np.zeros(Z.shape[0], dtype=np.int32)
         for i in range(Z.shape[0]):
-            preds[i] = self._predict_row(Z[i], self.tree_)
+            preds[i] = self._predict_leaf(Z[i], self.tree_).prediction
         return self.classes_[preds]
 
-    def _predict_row(self, row: np.ndarray, node: Union[MultiNode, MultiLeaf]) -> int:
+    def predict_proba(self, X):
+        check_is_fitted(self, ["tree_", "classes_"])
+        Z = check_array(X, ensure_2d=True, dtype=None)
+        if not np.issubdtype(np.asarray(Z).dtype, np.integer):
+            raise ValueError("MSPLIT expects LightGBM-binned integer features")
+        Z = np.asarray(Z, dtype=np.int32)
+        if (Z < 0).any():
+            raise ValueError("Binned input must be non-negative integer values")
+
+        n_classes = int(len(self.classes_))
+        proba = np.zeros((Z.shape[0], n_classes), dtype=np.float64)
+        for i in range(Z.shape[0]):
+            leaf = self._predict_leaf(Z[i], self.tree_)
+            counts = np.asarray(leaf.class_counts, dtype=np.float64)
+            if counts.size < n_classes:
+                counts = np.pad(counts, (0, n_classes - counts.size))
+            elif counts.size > n_classes:
+                counts = counts[:n_classes]
+            total = float(np.sum(counts))
+            if total > 0.0:
+                proba[i] = counts / total
+            else:
+                proba[i, int(leaf.prediction)] = 1.0
+        return proba
+
+    def _predict_leaf(self, row: np.ndarray, node: Union[MultiNode, MultiLeaf]) -> MultiLeaf:
         cur = node
         while isinstance(cur, MultiNode):
             feature_index = self._resolve_feature_index(cur.feature, row.shape[0])
@@ -611,9 +636,18 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
                 if nearest_group is not None:
                     child = cur.children.get(nearest_group)
                 if child is None:
-                    return cur.fallback_prediction
+                    fallback_counts = [0] * int(len(self.classes_))
+                    fallback_prediction = int(cur.fallback_prediction)
+                    if 0 <= fallback_prediction < len(fallback_counts):
+                        fallback_counts[fallback_prediction] = 1
+                    return MultiLeaf(
+                        prediction=fallback_prediction,
+                        loss=0.0,
+                        n_samples=0,
+                        class_counts=tuple(fallback_counts),
+                    )
             cur = child
-        return cur.prediction
+        return cur
 
     def _resolve_feature_index(self, feature_index: int, row_width: int) -> int:
         feature_index = int(feature_index)
@@ -784,24 +818,18 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
     def _leaf_solution(self, indices: np.ndarray) -> Tuple[float, MultiLeaf]:
         y_subset = self._y_train[indices]
         w_subset = self._w_train[indices]
-        positives = int(y_subset.sum())
-        negatives = int(y_subset.size - positives)
-        pos_w = float(np.sum(w_subset[y_subset == 1]))
-        neg_w = float(np.sum(w_subset[y_subset == 0]))
-
-        if pos_w >= neg_w:
-            prediction = 1
-            mistakes_w = neg_w
-        else:
-            prediction = 0
-            mistakes_w = pos_w
+        n_classes = int(len(self.classes_))
+        class_counts = np.bincount(y_subset, minlength=n_classes).astype(np.int32, copy=False)
+        class_weight = np.bincount(y_subset, weights=w_subset, minlength=n_classes).astype(np.float64, copy=False)
+        prediction = int(np.argmax(class_weight))
+        mistakes_w = float(np.sum(class_weight) - class_weight[prediction])
 
         loss = mistakes_w + self.reg
         return loss, MultiLeaf(
             prediction=prediction,
             loss=loss,
             n_samples=int(indices.size),
-            class_counts=(negatives, positives),
+            class_counts=tuple(int(v) for v in class_counts.tolist()),
         )
 
     def _is_pure(self, indices: np.ndarray) -> bool:
@@ -817,12 +845,14 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
     def _dict_to_tree(self, tree_obj: dict) -> Union[MultiNode, MultiLeaf]:
         node_type = tree_obj.get("type")
         if node_type == "leaf":
-            class_counts = tree_obj.get("class_counts", [0, 0])
+            default_class_count = max(1, int(len(getattr(self, "class_labels_", []))))
+            class_counts_raw = tree_obj.get("class_counts", [0] * default_class_count)
+            class_counts = tuple(int(v) for v in class_counts_raw)
             return MultiLeaf(
                 prediction=int(tree_obj["prediction"]),
                 loss=float(tree_obj["loss"]),
                 n_samples=int(tree_obj.get("n_samples", 0)),
-                class_counts=(int(class_counts[0]), int(class_counts[1])),
+                class_counts=class_counts,
             )
 
         children: Dict[int, Union[MultiNode, MultiLeaf]] = {}
@@ -883,18 +913,10 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
         if classes.size == 0:
             raise ValueError("Target y must not be empty")
 
-        if classes.size != 2:
-            raise ValueError(
-                f"MSPLIT currently supports binary targets only; received {classes.size} classes: {classes.tolist()}"
-            )
-
         ordered = sorted(classes.tolist(), key=lambda v: str(v))
-        mapping = {ordered[0]: 0, ordered[1]: 1}
+        mapping = {label: idx for idx, label in enumerate(ordered)}
         y_bin = np.array([mapping[val] for val in y_arr], dtype=np.int32)
-        labels = np.array(
-            [_to_python_scalar(ordered[0]), _to_python_scalar(ordered[1])],
-            dtype=object,
-        )
+        labels = np.array([_to_python_scalar(label) for label in ordered], dtype=object)
         return y_bin, labels
 
 

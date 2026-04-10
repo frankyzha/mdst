@@ -437,12 +437,12 @@
 
     GreedyResult greedy_complete_impl(
         std::vector<int> indices,
-        int depth_remaining,
-        bool exact_mode) {
+        int depth_remaining) {
         ++profiling_greedy_complete_calls_;
         record_greedy_complete_call(depth_remaining);
         const int current_depth = full_depth_budget_ - depth_remaining;
-        if (exact_mode && current_depth < effective_lookahead_depth_) {
+        const bool above_lookahead = current_depth < effective_lookahead_depth_;
+        if (above_lookahead) {
             ++exact_dp_subproblem_calls_above_lookahead_;
         } else {
             ++greedy_subproblem_calls_;
@@ -767,7 +767,7 @@
         std::vector<size_t> alive_indices;
         alive_indices.reserve(nominee_evals.size());
         size_t exactify_budget_count = 0U;
-        if (exact_mode) {
+        if (above_lookahead) {
             const bool dual_family_buckets = atomized_use_dual_families();
             if (dual_family_buckets) {
                 std::vector<size_t> impurity_indices;
@@ -832,14 +832,18 @@
                 exactify_budget_count = resolve_exactify_budget(nominee_evals.size());
             }
         } else {
-            size_t best_idx = 0U;
-            for (size_t idx = 1; idx < nominee_evals.size(); ++idx) {
-                if (nominee_prefer(idx, best_idx)) {
-                    best_idx = idx;
-                }
+            alive_indices.reserve(nominee_evals.size());
+            for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
+                alive_indices.push_back(idx);
             }
-            alive_indices.push_back(best_idx);
+            std::stable_sort(
+                alive_indices.begin(),
+                alive_indices.end(),
+                nominee_prefer);
             exactify_budget_count = resolve_exactify_budget(nominee_evals.size());
+            if (depth_remaining <= 1 && exactify_top_k_ <= 0) {
+                exactify_budget_count = nominee_evals.size();
+            }
         }
 
         std::vector<double> node_candidate_upper_bounds;
@@ -969,9 +973,7 @@
             return exact_results[idx];
         };
 
-        const size_t exactify_limit = exact_mode
-            ? std::min(exactify_budget_count, alive_indices.size())
-            : alive_indices.size();
+        const size_t exactify_limit = std::min(exactify_budget_count, alive_indices.size());
         for (size_t order = 0; order < exactify_limit; ++order) {
             const size_t idx = alive_indices[order];
             if (finalized[idx]) {
@@ -987,6 +989,25 @@
                 best_exact_tree = result.tree;
                 best_exact_idx = idx;
                 ++incumbent_update_count;
+            }
+        }
+        if (!above_lookahead && depth_remaining > 1 && best_exact_objective + kEpsUpdate >= leaf_objective) {
+            for (size_t order = exactify_limit; order < alive_indices.size(); ++order) {
+                const size_t idx = alive_indices[order];
+                if (finalized[idx]) {
+                    continue;
+                }
+                const ExactNomineeResult &result = exactify_nominee(idx);
+                if (!result.valid || !result.tree) {
+                    continue;
+                }
+                if (result.objective + kEpsUpdate < leaf_objective) {
+                    best_exact_objective = result.objective;
+                    best_exact_tree = result.tree;
+                    best_exact_idx = idx;
+                    ++incumbent_update_count;
+                    break;
+                }
             }
         }
         const GreedyResult solved = (best_exact_tree && best_exact_objective + kEpsUpdate < leaf_objective)
@@ -1068,9 +1089,5 @@
         GreedyResult solve_subproblem(
             std::vector<int> indices,
             int depth_remaining) {
-        const int current_depth = full_depth_budget_ - depth_remaining;
-        if (current_depth < effective_lookahead_depth_) {
-            return greedy_complete_impl(std::move(indices), depth_remaining, true);
-        }
-        return greedy_complete_impl(std::move(indices), depth_remaining, false);
+        return greedy_complete_impl(std::move(indices), depth_remaining);
     }
