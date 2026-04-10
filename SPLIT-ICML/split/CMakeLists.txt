@@ -68,7 +68,7 @@ if (SKBUILD)
 
   # Python Target
   file(GLOB_RECURSE SOURCE_FILES src/libgosdt/src/*.cpp src/libgosdt.cpp)
-  list(FILTER SOURCE_FILES EXCLUDE REGEX "src/libgosdt/src/(msplit\\.cpp|msplit_(debug|exact_lazy|atomized|atomized_support|atomized_heuristic|linear|nonlinear)\\.cpp|_msplit_atomized_exact_backup\\.cpp|_msplit_atomized_weird_backup\\.cpp)$")
+  list(FILTER SOURCE_FILES EXCLUDE REGEX "src/libgosdt/src/(msplit\\.cpp|msplit_(debug|exact_lazy|atomized|atomized_support|atomized_heuristic|linear|nonlinear)\\.cpp)$")
   python_add_library(${TARGET} MODULE ${SOURCE_FILES} WITH_SOABI)
   target_link_libraries(${TARGET} PRIVATE pybind11::module)
   target_include_directories(${TARGET} PUBLIC src/libgosdt/include/)
@@ -90,7 +90,7 @@ endif()
 
 # CLI Target
 file(GLOB_RECURSE SOURCE_FILES src/libgosdt/src/*.cpp src/cli.cpp)
-list(FILTER SOURCE_FILES EXCLUDE REGEX "src/libgosdt/src/(msplit\\.cpp|msplit_(debug|exact_lazy|atomized|atomized_support|atomized_heuristic|linear|nonlinear)\\.cpp|_msplit_atomized_exact_backup\\.cpp|_msplit_atomized_weird_backup\\.cpp)$")
+list(FILTER SOURCE_FILES EXCLUDE REGEX "src/libgosdt/src/(msplit\\.cpp|msplit_(debug|exact_lazy|atomized|atomized_support|atomized_heuristic|linear|nonlinear)\\.cpp)$")
 add_executable(${CLI_TARGET} ${SOURCE_FILES})
 target_include_directories(${CLI_TARGET} PUBLIC src/libgosdt/include/)
 configure_local_release_optimizations(${CLI_TARGET})

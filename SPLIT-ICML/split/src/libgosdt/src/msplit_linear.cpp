@@ -776,7 +776,6 @@
                 groups,
                 adjacency_bonus,
                 adjacency_bonus_total,
-                true,
                 seed.hard_loss_mode ? AtomizedObjectiveMode::kHardLoss : AtomizedObjectiveMode::kImpurity);
             if (!refined.feasible) {
                 return seed;
@@ -1062,7 +1061,6 @@
             groups,
             adjacency_bonus,
             adjacency_bonus_total,
-            true,
             seed.hard_loss_mode ? AtomizedObjectiveMode::kHardLoss : AtomizedObjectiveMode::kImpurity);
         if (!refined.feasible) {
             return seed;
@@ -1480,7 +1478,6 @@
             block_seed,
             &prepared.atom_adjacency_bonus,
             prepared.atom_adjacency_bonus_total,
-            true,
             mode);
         if (!coarse.geometry_seed_candidate.feasible) {
             return AtomizedCoarseCandidate{};

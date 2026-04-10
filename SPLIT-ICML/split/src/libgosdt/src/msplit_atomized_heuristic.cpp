@@ -2,8 +2,7 @@
         int feature,
         const PreparedFeatureAtomized &prepared,
         int groups,
-        double mu_node,
-        bool compute_branch_hard_losses
+        double mu_node
     ) const {
         std::vector<AtomizedCandidate> selected;
         selected.reserve(3);
@@ -47,7 +46,6 @@
             mu_node,
             impurity_coarse,
             AtomizedObjectiveMode::kImpurity,
-            compute_branch_hard_losses,
             impurity_raw_seed_ptr);
         if (!use_dual_families) {
             if (impurity.feasible) {
@@ -64,7 +62,6 @@
             mu_node,
             *hardloss_coarse_ptr,
             AtomizedObjectiveMode::kHardLoss,
-            compute_branch_hard_losses,
             misclassification_raw_seed);
 
         if (impurity.feasible && misclassification.feasible) {
@@ -223,11 +220,9 @@
 
     size_t collect_cheap_candidates(
         const std::vector<int> &indices,
-        int depth_remaining,
         double mu_node,
         std::vector<PreparedFeatureAtomized> &prepared_by_feature,
-        std::vector<CandidateEval> &candidate_evals,
-        bool compute_branch_hard_losses
+        std::vector<CandidateEval> &candidate_evals
     ) const {
         prepared_by_feature.assign((size_t)n_features_, PreparedFeatureAtomized{});
         candidate_evals.clear();
@@ -242,8 +237,7 @@
                         indices,
                         feature,
                         mu_node,
-                        prepared,
-                        compute_branch_hard_losses)) {
+                        prepared)) {
                     continue;
                 }
             }
@@ -309,8 +303,7 @@
         const std::vector<PreparedFeatureAtomized> &prepared_by_feature,
         const std::vector<CandidateEval> &candidate_evals,
         double mu_node,
-        int depth_remaining,
-        bool compute_branch_hard_losses
+        int depth_remaining
     ) const {
         std::vector<NomineeEval> nominees;
         nominees.reserve(candidate_evals.size() * 3U);
@@ -363,8 +356,7 @@
                 eval.feature,
                 prepared,
                 eval.groups,
-                mu_node,
-                compute_branch_hard_losses);
+                mu_node);
             if (candidates.empty()) {
                 continue;
             }
@@ -604,11 +596,9 @@
             ScopedTimer candidate_timer(profiling_candidate_generation_sec_);
             preserved_feature_count = collect_cheap_candidates(
                 indices,
-                depth_remaining,
                 mu_node,
                 prepared_by_feature,
-                candidate_evals,
-                true);
+                candidate_evals);
         }
         if (candidate_evals.empty()) {
             record_node_scale(stats);
@@ -701,8 +691,7 @@
             prepared_by_feature,
             surviving_candidate_evals,
             mu_node,
-            depth_remaining,
-            true);
+            depth_remaining);
         if (nominee_evals.empty()) {
             record_node_scale(stats);
             record_empty_candidate_curves();

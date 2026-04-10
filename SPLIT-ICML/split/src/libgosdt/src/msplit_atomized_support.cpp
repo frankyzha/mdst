@@ -42,13 +42,11 @@
         int groups = 0;
         bool hard_loss_mode = false;
         std::vector<int> assignment;
-        std::vector<double> branch_hard_losses;
     };
 
     struct AtomizedCoarseCandidate {
         AtomizedCandidate geometry_seed_candidate;
         AtomizedCandidate block_candidate;
-        AtomizedCandidate hardloss_candidate;
         AtomizedCandidate candidate;
         std::vector<int> initial_block_assignment;
         std::vector<int> refined_block_assignment;
@@ -1545,17 +1543,12 @@
         const std::vector<std::vector<int>> &group_atom_positions,
         const std::vector<int> *assignment = nullptr,
         const std::vector<double> *adjacency_bonus = nullptr,
-        double adjacency_bonus_total = 0.0,
-        std::vector<double> *branch_hard_losses = nullptr
+        double adjacency_bonus_total = 0.0
     ) const {
         AtomizedScore score{0.0, 0.0, 0.0, 0.0, 0.0, 0};
         double kept_adjacency_bonus = 0.0;
         const bool has_adjacency_bonus =
             adjacency_bonus != nullptr && !adjacency_bonus->empty();
-        if (branch_hard_losses != nullptr) {
-            branch_hard_losses->clear();
-            branch_hard_losses->reserve(group_atom_positions.size());
-        }
         for (const auto &group : group_atom_positions) {
             if (group.empty()) {
                 return AtomizedScore{};
@@ -1602,23 +1595,15 @@
                 return AtomizedScore{};
             }
             if (binary_mode_) {
-                const double branch_hard_loss = split_leaf_loss(pos_weight, neg_weight);
-                score.hard_loss += branch_hard_loss;
+                score.hard_loss += split_leaf_loss(pos_weight, neg_weight);
                 score.soft_loss += split_leaf_loss(teacher_pos_weight, teacher_neg_weight);
                 score.hard_impurity += hard_label_impurity(pos_weight, neg_weight);
                 score.soft_impurity += hard_label_impurity(teacher_pos_weight, teacher_neg_weight);
-                if (branch_hard_losses != nullptr) {
-                    branch_hard_losses->push_back(branch_hard_loss);
-                }
             } else {
-                const double branch_hard_loss = split_leaf_loss(class_weight);
-                score.hard_loss += branch_hard_loss;
+                score.hard_loss += split_leaf_loss(class_weight);
                 score.soft_loss += split_leaf_loss(teacher_class_weight);
                 score.hard_impurity += hard_label_impurity(class_weight);
                 score.soft_impurity += hard_label_impurity(teacher_class_weight);
-                if (branch_hard_losses != nullptr) {
-                    branch_hard_losses->push_back(branch_hard_loss);
-                }
             }
             score.components += components;
         }
@@ -1676,7 +1661,6 @@
         int groups,
         const std::vector<double> *adjacency_bonus = nullptr,
         double adjacency_bonus_total = 0.0,
-        bool compute_branch_hard_losses = true,
         AtomizedObjectiveMode objective_mode = AtomizedObjectiveMode::kImpurity
     ) const {
         AtomizedCandidate out;
@@ -1709,10 +1693,6 @@
             std::vector<double> group_neg((size_t)groups, 0.0);
             std::vector<double> group_teacher_pos((size_t)groups, 0.0);
             std::vector<double> group_teacher_neg((size_t)groups, 0.0);
-            std::vector<double> branch_hard_losses;
-            if (compute_branch_hard_losses) {
-                branch_hard_losses.reserve((size_t)groups);
-            }
             double kept_adjacency_bonus = 0.0;
             out.score = AtomizedScore{0.0, 0.0, 0.0, 0.0, 0.0, 0};
 
@@ -1760,9 +1740,6 @@
                     group_teacher_pos[(size_t)group_idx],
                     group_teacher_neg[(size_t)group_idx]);
                 out.score.components += group_components[(size_t)group_idx];
-                if (compute_branch_hard_losses) {
-                    branch_hard_losses.push_back(branch_hard_loss);
-                }
             }
 
             if (adjacency_bonus != nullptr) {
@@ -1783,9 +1760,6 @@
             out.groups = groups;
             out.hard_loss_mode = (objective_mode == AtomizedObjectiveMode::kHardLoss);
             out.assignment = assign;
-            if (compute_branch_hard_losses) {
-                out.branch_hard_losses = std::move(branch_hard_losses);
-            }
             return out;
         }
         std::vector<std::vector<int>> group_atom_positions;
@@ -1799,8 +1773,7 @@
             group_atom_positions,
             &assign,
             adjacency_bonus,
-            adjacency_bonus_total,
-            compute_branch_hard_losses ? &out.branch_hard_losses : nullptr);
+            adjacency_bonus_total);
         if (!std::isfinite(out.score.hard_impurity)) {
             return AtomizedCandidate{};
         }
@@ -1819,7 +1792,6 @@
         const AtomizedCandidate &block_candidate,
         const std::vector<double> *adjacency_bonus = nullptr,
         double adjacency_bonus_total = 0.0,
-        bool compute_branch_hard_losses = true,
         AtomizedObjectiveMode objective_mode = AtomizedObjectiveMode::kImpurity
     ) const {
         if (!block_candidate.feasible) {
@@ -1834,6 +1806,5 @@
             block_candidate.groups,
             adjacency_bonus,
             adjacency_bonus_total,
-            compute_branch_hard_losses,
             objective_mode);
     }

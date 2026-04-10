@@ -8,8 +8,7 @@
         AtomizedRefinementSummary *summary = nullptr,
         const std::vector<double> *adjacency_bonus = nullptr,
         double adjacency_bonus_total = 0.0,
-        AtomizedObjectiveMode mode = AtomizedObjectiveMode::kImpurity,
-        bool compute_branch_hard_losses = true
+        AtomizedObjectiveMode mode = AtomizedObjectiveMode::kImpurity
     ) const {
         if (!seed.feasible) {
             return seed;
@@ -775,7 +774,8 @@
                 assign,
                 groups,
                 adjacency_bonus,
-                adjacency_bonus_total);
+                adjacency_bonus_total,
+                seed.hard_loss_mode ? AtomizedObjectiveMode::kHardLoss : AtomizedObjectiveMode::kImpurity);
             if (!refined.feasible) {
                 return seed;
             }
@@ -1060,7 +1060,7 @@
             groups,
             adjacency_bonus,
             adjacency_bonus_total,
-            compute_branch_hard_losses);
+            seed.hard_loss_mode ? AtomizedObjectiveMode::kHardLoss : AtomizedObjectiveMode::kImpurity);
         if (!refined.feasible) {
             return seed;
         }
@@ -1429,8 +1429,7 @@
         const PreparedFeatureAtomized &prepared,
         int groups,
         double mu_node,
-        AtomizedObjectiveMode mode,
-        bool compute_branch_hard_losses
+        AtomizedObjectiveMode mode
     ) const {
         AtomizedCoarseCandidate coarse;
         if (groups < 2 || groups > prepared.q_effective) {
@@ -1473,7 +1472,7 @@
             block_seed,
             &prepared.atom_adjacency_bonus,
             prepared.atom_adjacency_bonus_total,
-            compute_branch_hard_losses);
+            mode);
         if (!coarse.geometry_seed_candidate.feasible) {
             return AtomizedCoarseCandidate{};
         }
@@ -1488,8 +1487,7 @@
             &block_summary,
             nullptr,
             0.0,
-            mode,
-            compute_branch_hard_losses);
+            mode);
         record_refinement_summary(block_summary);
 
         coarse.refined_block_assignment = refined_block.assignment;
@@ -1500,7 +1498,7 @@
             refined_block,
             &prepared.atom_adjacency_bonus,
             prepared.atom_adjacency_bonus_total,
-            compute_branch_hard_losses);
+            mode);
         coarse.candidate = coarse.geometry_seed_candidate;
         if (coarse.block_candidate.feasible &&
             atomized_candidate_better_for_objective(
@@ -1518,8 +1516,7 @@
         const std::vector<int> &indices,
         int feature,
         double mu_node,
-        PreparedFeatureAtomized &prepared,
-        bool compute_branch_hard_losses
+        PreparedFeatureAtomized &prepared
     ) const {
         auto &telemetry = const_cast<Solver *>(this)->atomized_telemetry();
         prepared = PreparedFeatureAtomized{};
@@ -1611,8 +1608,7 @@
                 prepared,
                 groups,
                 mu_node,
-                AtomizedObjectiveMode::kImpurity,
-                compute_branch_hard_losses);
+                AtomizedObjectiveMode::kImpurity);
             AtomizedCoarseCandidate hardloss_coarse;
             if (use_dual_families) {
                 hardloss_coarse = prepare_folded_family_coarse(
@@ -1620,8 +1616,7 @@
                     prepared,
                     groups,
                     mu_node,
-                    AtomizedObjectiveMode::kHardLoss,
-                    compute_branch_hard_losses);
+                    AtomizedObjectiveMode::kHardLoss);
             }
             if (!coarse.candidate.feasible && (!use_dual_families || !hardloss_coarse.candidate.feasible)) {
                 continue;
@@ -1645,7 +1640,6 @@
         double mu_node,
         const AtomizedCoarseCandidate &coarse,
         AtomizedObjectiveMode mode,
-        bool compute_branch_hard_losses,
         const AtomizedCandidate *raw_seed_override = nullptr
     ) const {
         AtomizedCandidate best;
@@ -1702,8 +1696,7 @@
                 &raw_summary,
                 &prepared.atom_adjacency_bonus,
                 prepared.atom_adjacency_bonus_total,
-                mode,
-                compute_branch_hard_losses);
+                mode);
             record_refinement_summary(raw_summary);
 
             AtomizedCandidate geometry_candidate = raw_seed;
@@ -1753,7 +1746,7 @@
                     groups,
                     nullptr,
                     0.0,
-                    compute_branch_hard_losses);
+                    mode);
                 if (projected_block_seed.feasible) {
                     AtomizedRefinementSummary block_summary;
                     const AtomizedCandidate refined_block = refine_atomized_candidate_debr(
@@ -1764,8 +1757,7 @@
                         &block_summary,
                         nullptr,
                         0.0,
-                        mode,
-                        compute_branch_hard_losses);
+                        mode);
                     record_refinement_summary(block_summary);
                     refined_block_assignment = refined_block.assignment;
                 }
@@ -1789,8 +1781,7 @@
             &raw_summary,
             &prepared.atom_adjacency_bonus,
             prepared.atom_adjacency_bonus_total,
-            mode,
-            compute_branch_hard_losses);
+            mode);
         record_refinement_summary(raw_summary);
 
         AtomizedCandidate geometry_candidate = raw_seed;
