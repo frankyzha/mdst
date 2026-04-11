@@ -185,6 +185,70 @@
         double upper_bound = kInfinity;
     };
 
+    static std::string canonical_assignment_signature(
+        int feature,
+        int groups,
+        std::vector<int> &assignment
+    ) {
+        if (!assignment.empty()) {
+            std::vector<int> label_map((size_t)groups, -1);
+            int next_label = 0;
+            for (int &label : assignment) {
+                if (label < 0 || label >= groups) {
+                    label = -1;
+                    continue;
+                }
+                int &mapped = label_map[(size_t)label];
+                if (mapped < 0) {
+                    mapped = next_label++;
+                }
+                label = mapped;
+            }
+        }
+        std::string key;
+        key.reserve(sizeof(uint64_t) * (assignment.size() + 4U));
+        auto append_varint = [&](uint64_t value) {
+            while (value >= 0x80U) {
+                key.push_back(static_cast<char>((value & 0x7FU) | 0x80U));
+                value >>= 7U;
+            }
+            key.push_back(static_cast<char>(value));
+        };
+        append_varint((uint64_t)feature);
+        append_varint((uint64_t)groups);
+        append_varint((uint64_t)assignment.size());
+        for (int value : assignment) {
+            append_varint((uint64_t)std::max(0, value));
+        }
+        return key;
+    }
+
+    static int compare_nominee_eval_core(const NomineeEval &lhs, const NomineeEval &rhs) {
+        const double lhs_impurity =
+            lhs.candidate.score.hard_impurity + lhs.candidate.score.soft_impurity;
+        const double rhs_impurity =
+            rhs.candidate.score.hard_impurity + rhs.candidate.score.soft_impurity;
+        if (lhs_impurity < rhs_impurity - kEpsUpdate) {
+            return -1;
+        }
+        if (rhs_impurity < lhs_impurity - kEpsUpdate) {
+            return 1;
+        }
+        if (lhs.candidate.score.components != rhs.candidate.score.components) {
+            return lhs.candidate.score.components < rhs.candidate.score.components ? -1 : 1;
+        }
+        if (lhs.feature != rhs.feature) {
+            return lhs.feature < rhs.feature ? -1 : 1;
+        }
+        if (lhs.groups != rhs.groups) {
+            return lhs.groups < rhs.groups ? -1 : 1;
+        }
+        if (lhs.candidate.hard_loss_mode != rhs.candidate.hard_loss_mode) {
+            return lhs.candidate.hard_loss_mode ? 1 : -1;
+        }
+        return 0;
+    }
+
     size_t collect_cheap_candidates(
         const std::vector<int> &indices,
         double mu_node,
@@ -277,8 +341,7 @@
     std::vector<NomineeEval> build_nominee_evals(
         const std::vector<PreparedFeatureAtomized> &prepared_by_feature,
         const std::vector<CandidateEval> &candidate_evals,
-        double mu_node,
-        int depth_remaining
+        double mu_node
     ) const {
         std::vector<NomineeEval> nominees;
         nominees.reserve(candidate_evals.size() * 3U);
@@ -286,39 +349,6 @@
         auto &telemetry = const_cast<Solver *>(this)->atomized_telemetry();
         std::unordered_set<std::string> nominee_signature_seen;
         nominee_signature_seen.reserve(candidate_evals.size() * 3U);
-        auto make_signature_key = [&](int feature, int groups, std::vector<int> &assignment) {
-            if (!assignment.empty()) {
-                std::vector<int> label_map((size_t)groups, -1);
-                int next_label = 0;
-                for (int &label : assignment) {
-                    if (label < 0 || label >= groups) {
-                        label = -1;
-                        continue;
-                    }
-                    int &mapped = label_map[(size_t)label];
-                    if (mapped < 0) {
-                        mapped = next_label++;
-                    }
-                    label = mapped;
-                }
-            }
-            std::string key;
-            key.reserve(sizeof(uint64_t) * (assignment.size() + 4U));
-            auto append_varint = [&](uint64_t value) {
-                while (value >= 0x80U) {
-                    key.push_back(static_cast<char>((value & 0x7FU) | 0x80U));
-                    value >>= 7U;
-                }
-                key.push_back(static_cast<char>(value));
-            };
-            append_varint((uint64_t)feature);
-            append_varint((uint64_t)groups);
-            append_varint((uint64_t)assignment.size());
-            for (int value : assignment) {
-                append_varint((uint64_t)std::max(0, value));
-            }
-            return key;
-        };
 
         for (const CandidateEval &eval : candidate_evals) {
             const PreparedFeatureAtomized &prepared = prepared_by_feature[(size_t)eval.feature];
@@ -356,7 +386,7 @@
                         nominee_mode)
                     : eval.cheap_score;
                 nominee.cheap_lower_bound = eval.cheap_lower_bound;
-                const std::string signature_key = make_signature_key(
+                const std::string signature_key = canonical_assignment_signature(
                     nominee.feature,
                     nominee.groups,
                     candidate.assignment);
@@ -370,6 +400,85 @@
         }
         auto *self = const_cast<Solver *>(this);
         self->nominee_unique_total_ += static_cast<long long>(nominees.size());
+        return nominees;
+    }
+
+    std::vector<NomineeEval> build_leafside_nominee_eval(
+        const std::vector<PreparedFeatureAtomized> &prepared_by_feature,
+        const std::vector<CandidateEval> &candidate_evals,
+        double mu_node
+    ) const {
+        auto &telemetry = const_cast<Solver *>(this)->atomized_telemetry();
+        std::unordered_set<std::string> nominee_signature_seen;
+        nominee_signature_seen.reserve(candidate_evals.size() * 2U);
+
+        bool has_best = false;
+        NomineeEval best_nominee;
+        size_t unique_nominee_count = 0U;
+
+        for (const CandidateEval &eval : candidate_evals) {
+            const PreparedFeatureAtomized &prepared = prepared_by_feature[(size_t)eval.feature];
+            if (!prepared.valid) {
+                continue;
+            }
+            std::vector<AtomizedCandidate> candidates = select_atomized_candidates_for_arity(
+                prepared,
+                eval.groups,
+                mu_node);
+            if (candidates.empty()) {
+                continue;
+            }
+            telemetry.greedy_interval_evals += static_cast<long long>(candidates.size());
+            telemetry.atomized_final_candidates += static_cast<long long>(candidates.size());
+
+            for (AtomizedCandidate &candidate : candidates) {
+                if (!candidate.feasible) {
+                    continue;
+                }
+                const std::string signature_key = canonical_assignment_signature(
+                    eval.feature,
+                    eval.groups,
+                    candidate.assignment);
+                if (nominee_signature_seen.find(signature_key) != nominee_signature_seen.end()) {
+                    continue;
+                }
+                nominee_signature_seen.emplace(signature_key);
+                ++unique_nominee_count;
+
+                NomineeEval nominee;
+                nominee.feature = eval.feature;
+                nominee.groups = eval.groups;
+                const bool hard_loss_mode = candidate.hard_loss_mode;
+                const AtomizedObjectiveMode nominee_mode = hard_loss_mode
+                    ? AtomizedObjectiveMode::kHardLoss
+                    : AtomizedObjectiveMode::kImpurity;
+                const auto &family_coarse = hard_loss_mode
+                    ? prepared.coarse_by_groups_hardloss[(size_t)eval.groups]
+                    : prepared.coarse_by_groups[(size_t)eval.groups];
+                nominee.cheap_score = family_coarse.candidate.feasible
+                    ? atomized_score_proxy(
+                        family_coarse.candidate.score,
+                        mu_node,
+                        nominee_mode)
+                    : eval.cheap_score;
+                nominee.cheap_lower_bound = eval.cheap_lower_bound;
+                nominee.candidate = std::move(candidate);
+
+                if (!has_best || compare_nominee_eval_core(nominee, best_nominee) < 0) {
+                    best_nominee = std::move(nominee);
+                    has_best = true;
+                }
+            }
+        }
+
+        auto *self = const_cast<Solver *>(this);
+        self->nominee_unique_total_ += static_cast<long long>(unique_nominee_count);
+        if (!has_best) {
+            return {};
+        }
+        std::vector<NomineeEval> nominees;
+        nominees.reserve(1U);
+        nominees.push_back(std::move(best_nominee));
         return nominees;
     }
 
@@ -470,10 +579,6 @@
 
         const SubproblemStats stats = compute_subproblem_stats(indices);
         auto [leaf_objective, leaf_tree] = leaf_solution(stats);
-        const double reference_floor_leaf =
-            teacher_available_
-                ? (stats.reference_error_weight + regularization_)
-                : -kInfinity;
         auto return_leaf_now = [&](const char *label,
                                    size_t preserved_features,
                                    unsigned long long candidate_count,
@@ -506,7 +611,8 @@
             return return_leaf_now("return_min_split", 0U, 0U, leaf_objective);
         }
         const double mu_node = effective_sample_unit(stats);
-        const bool disable_pair_prune_globally = disable_coarse_pruning_;
+        const bool disable_pair_prune_globally =
+            disable_coarse_pruning_ || current_depth == effective_lookahead_depth_;
         auto bump_count_histogram = [](std::vector<long long> &hist, size_t bucket) {
             if (hist.size() <= bucket) {
                 hist.resize(bucket + 1, 0LL);
@@ -568,11 +674,15 @@
                 best_coarse_proxy);
         }
 
-        std::vector<NomineeEval> nominee_evals = build_nominee_evals(
-            prepared_by_feature,
-            surviving_candidate_evals,
-            mu_node,
-            depth_remaining);
+        std::vector<NomineeEval> nominee_evals = exact_mode
+            ? build_nominee_evals(
+                prepared_by_feature,
+                surviving_candidate_evals,
+                mu_node)
+            : build_leafside_nominee_eval(
+                prepared_by_feature,
+                surviving_candidate_evals,
+                mu_node);
         if (nominee_evals.empty()) {
             return return_leaf_now(
                 "return_no_nominee",
@@ -589,42 +699,8 @@
         auto nominee_prefer = [&](size_t lhs_idx, size_t rhs_idx) {
             const NomineeEval &lhs = nominee_evals[lhs_idx];
             const NomineeEval &rhs = nominee_evals[rhs_idx];
-            const double lhs_impurity = atomized_primary_objective(
-                lhs.candidate.score,
-                AtomizedObjectiveMode::kImpurity);
-            const double rhs_impurity = atomized_primary_objective(
-                rhs.candidate.score,
-                AtomizedObjectiveMode::kImpurity);
-            if (lhs_impurity < rhs_impurity - kEpsUpdate) {
-                return true;
-            }
-            if (rhs_impurity < lhs_impurity - kEpsUpdate) {
-                return false;
-            }
-            const double lhs_hard_ceiling = nominee_hard_ceiling(lhs);
-            const double rhs_hard_ceiling = nominee_hard_ceiling(rhs);
-            if (lhs_hard_ceiling < rhs_hard_ceiling - kEpsUpdate) {
-                return true;
-            }
-            if (rhs_hard_ceiling < lhs_hard_ceiling - kEpsUpdate) {
-                return false;
-            }
-            if (lhs.candidate.score.boundary_penalty < rhs.candidate.score.boundary_penalty - kEpsUpdate) {
-                return true;
-            }
-            if (rhs.candidate.score.boundary_penalty < lhs.candidate.score.boundary_penalty - kEpsUpdate) {
-                return false;
-            }
-            if (lhs.candidate.score.components != rhs.candidate.score.components) {
-                return lhs.candidate.score.components < rhs.candidate.score.components;
-            }
-            if (lhs.feature != rhs.feature) {
-                return lhs.feature < rhs.feature;
-            }
-            if (lhs.groups != rhs.groups) {
-                return lhs.groups < rhs.groups;
-            }
-            return lhs_idx < rhs_idx;
+            const int cmp = compare_nominee_eval_core(lhs, rhs);
+            return cmp < 0 || (cmp == 0 && lhs_idx < rhs_idx);
         };
 
         auto resolve_exactify_budget = [&](size_t candidate_count) -> size_t {
@@ -640,26 +716,6 @@
                 std::ceil(std::sqrt(static_cast<double>(candidate_count))));
             return std::max<size_t>(1U, std::min(candidate_count, budget));
         };
-        auto nominee_family_prefer = [&](size_t lhs_idx, size_t rhs_idx) {
-            const NomineeEval &lhs = nominee_evals[lhs_idx];
-            const NomineeEval &rhs = nominee_evals[rhs_idx];
-            const AtomizedObjectiveMode lhs_mode = lhs.candidate.hard_loss_mode
-                ? AtomizedObjectiveMode::kHardLoss
-                : AtomizedObjectiveMode::kImpurity;
-            const AtomizedObjectiveMode rhs_mode = rhs.candidate.hard_loss_mode
-                ? AtomizedObjectiveMode::kHardLoss
-                : AtomizedObjectiveMode::kImpurity;
-            const double lhs_primary = atomized_primary_objective(lhs.candidate.score, lhs_mode);
-            const double rhs_primary = atomized_primary_objective(rhs.candidate.score, rhs_mode);
-            if (lhs_primary < rhs_primary - kEpsUpdate) {
-                return true;
-            }
-            if (rhs_primary < lhs_primary - kEpsUpdate) {
-                return false;
-            }
-            return nominee_prefer(lhs_idx, rhs_idx);
-        };
-
         double search_upper_bound = leaf_objective;
         for (const NomineeEval &eval : nominee_evals) {
             if (eval.candidate.hard_loss_mode) {
@@ -762,15 +818,30 @@
         size_t exactify_budget_count = 0U;
         if (exact_mode) {
             size_t best_impurity_idx = std::numeric_limits<size_t>::max();
+            size_t best_hardloss_idx = std::numeric_limits<size_t>::max();
             for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
                 alive_indices.push_back(idx);
-                if (!nominee_evals[idx].candidate.hard_loss_mode &&
-                    (best_impurity_idx == std::numeric_limits<size_t>::max() ||
-                     nominee_prefer(idx, best_impurity_idx))) {
+                if (nominee_evals[idx].candidate.hard_loss_mode) {
+                    if (best_hardloss_idx == std::numeric_limits<size_t>::max() ||
+                        nominee_prefer(idx, best_hardloss_idx)) {
+                        best_hardloss_idx = idx;
+                    }
+                } else if (best_impurity_idx == std::numeric_limits<size_t>::max() ||
+                           nominee_prefer(idx, best_impurity_idx)) {
                     best_impurity_idx = idx;
                 }
             }
-            exactify_budget_count = resolve_exactify_budget(nominee_evals.size());
+            size_t anchor_count = 0U;
+            if (best_impurity_idx != std::numeric_limits<size_t>::max()) {
+                ++anchor_count;
+            }
+            if (best_hardloss_idx != std::numeric_limits<size_t>::max() &&
+                best_hardloss_idx != best_impurity_idx) {
+                ++anchor_count;
+            }
+            exactify_budget_count = std::max(
+                resolve_exactify_budget(nominee_evals.size()),
+                anchor_count);
             if (exactify_budget_count < alive_indices.size()) {
                 auto prefix_end =
                     alive_indices.begin() + static_cast<std::ptrdiff_t>(exactify_budget_count);
@@ -780,41 +851,38 @@
                     alive_indices.end(),
                     nominee_prefer);
                 alive_indices.resize(exactify_budget_count);
-                if (best_impurity_idx != std::numeric_limits<size_t>::max() &&
-                    std::find(alive_indices.begin(), alive_indices.end(), best_impurity_idx) == alive_indices.end()) {
-                    alive_indices.back() = best_impurity_idx;
-                }
+                auto ensure_anchor = [&](size_t anchor_idx) {
+                    if (anchor_idx == std::numeric_limits<size_t>::max()) {
+                        return;
+                    }
+                    if (std::find(alive_indices.begin(), alive_indices.end(), anchor_idx) != alive_indices.end()) {
+                        return;
+                    }
+                    size_t replace_pos = alive_indices.empty() ? 0U : alive_indices.size() - 1U;
+                    while (replace_pos > 0U &&
+                           (alive_indices[replace_pos] == best_impurity_idx ||
+                            alive_indices[replace_pos] == best_hardloss_idx)) {
+                        --replace_pos;
+                    }
+                    if (alive_indices.empty()) {
+                        alive_indices.push_back(anchor_idx);
+                    } else {
+                        alive_indices[replace_pos] = anchor_idx;
+                    }
+                };
+                ensure_anchor(best_impurity_idx);
+                ensure_anchor(best_hardloss_idx);
             }
             std::sort(alive_indices.begin(), alive_indices.end(), nominee_prefer);
         } else {
-            size_t best_impurity_idx = std::numeric_limits<size_t>::max();
-            size_t best_hardloss_idx = std::numeric_limits<size_t>::max();
-            for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
-                if (nominee_evals[idx].candidate.hard_loss_mode) {
-                    if (best_hardloss_idx == std::numeric_limits<size_t>::max() ||
-                        nominee_family_prefer(idx, best_hardloss_idx)) {
-                        best_hardloss_idx = idx;
-                    }
-                } else {
-                    if (best_impurity_idx == std::numeric_limits<size_t>::max() ||
-                        nominee_family_prefer(idx, best_impurity_idx)) {
-                        best_impurity_idx = idx;
-                    }
+            size_t best_idx = 0U;
+            for (size_t idx = 1; idx < nominee_evals.size(); ++idx) {
+                if (nominee_prefer(idx, best_idx)) {
+                    best_idx = idx;
                 }
             }
-            if (best_impurity_idx != std::numeric_limits<size_t>::max()) {
-                alive_indices.push_back(best_impurity_idx);
-            }
-            if (alive_indices.empty()) {
-                for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
-                    alive_indices.push_back(idx);
-                }
-            }
-            std::stable_sort(
-                alive_indices.begin(),
-                alive_indices.end(),
-                nominee_prefer);
-            exactify_budget_count = alive_indices.size();
+            alive_indices.push_back(best_idx);
+            exactify_budget_count = 1U;
         }
 
         std::vector<double> node_candidate_upper_bounds;
