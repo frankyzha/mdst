@@ -531,27 +531,6 @@
             cache_store(state_key, solved, depth_remaining);
             return solved;
         }
-        if (above_lookahead && teacher_available_ &&
-            reference_floor_leaf + kEpsUpdate >= leaf_objective) {
-            record_node_scale(stats);
-            record_empty_candidate_curves();
-            GreedyResult solved{leaf_objective, leaf_tree};
-            trace_greedy_snapshot(
-                "return_reference_leaf",
-                depth_remaining,
-                indices.size(),
-                0U,
-                0U,
-                0U,
-                0U,
-                0U,
-                solved.objective,
-                reference_floor_leaf,
-                0U);
-            cache_store(state_key, solved, depth_remaining);
-            return solved;
-        }
-
         const double mu_node = effective_sample_unit(stats);
         const double prune_slack = mu_node;
         const bool disable_pair_prune_globally = disable_coarse_pruning_;
@@ -918,7 +897,10 @@
                 alive_indices.push_back(best_impurity_idx);
             }
             if (best_hardloss_idx != std::numeric_limits<size_t>::max() &&
-                best_hardloss_idx != best_impurity_idx) {
+                best_hardloss_idx != best_impurity_idx &&
+                (best_impurity_idx == std::numeric_limits<size_t>::max() ||
+                 nominee_hard_ceiling(nominee_evals[best_hardloss_idx]) + kEpsUpdate <
+                     nominee_hard_ceiling(nominee_evals[best_impurity_idx]))) {
                 alive_indices.push_back(best_hardloss_idx);
             }
             if (alive_indices.empty()) {
