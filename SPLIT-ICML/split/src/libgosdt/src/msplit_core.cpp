@@ -43,14 +43,17 @@ static bool env_flag_enabled(const char *name) {
 }
 
 struct ScopedTimer {
-    double &accumulator;
-    Clock::time_point start;
+    double *accumulator = nullptr;
+    Clock::time_point start{};
 
-    explicit ScopedTimer(double &acc)
-        : accumulator(acc), start(Clock::now()) {}
+    explicit ScopedTimer(double &acc, bool enabled = true)
+        : accumulator(enabled ? &acc : nullptr),
+          start(enabled ? Clock::now() : Clock::time_point{}) {}
 
     ~ScopedTimer() {
-        accumulator += std::chrono::duration<double>(Clock::now() - start).count();
+        if (accumulator != nullptr) {
+            *accumulator += std::chrono::duration<double>(Clock::now() - start).count();
+        }
     }
 };
 
@@ -371,15 +374,15 @@ class Solver {
         long long &nominee_certificate_exhausted_nodes;
         long long &nominee_exactified_until_certificate_total;
         long long &nominee_exactified_until_certificate_max;
-        long long &nominee_elbow_prefix_total;
-        long long &nominee_elbow_prefix_max;
+        long long &nominee_exactify_prefix_total;
+        long long &nominee_exactify_prefix_max;
         double &nominee_certificate_min_remaining_lower_bound_sum;
         double &nominee_certificate_min_remaining_lower_bound_max;
         double &nominee_certificate_incumbent_exact_score_sum;
         double &nominee_certificate_incumbent_exact_score_max;
         std::vector<long long> &nominee_exactified_until_certificate_histogram;
         std::vector<long long> &nominee_certificate_stop_depth_histogram;
-        std::vector<long long> &nominee_elbow_prefix_histogram;
+        std::vector<long long> &nominee_exactify_prefix_histogram;
     };
 
     Solver(
@@ -533,15 +536,15 @@ class Solver {
               nominee_certificate_exhausted_nodes_,
               nominee_exactified_until_certificate_total_,
               nominee_exactified_until_certificate_max_,
-              nominee_elbow_prefix_total_,
-              nominee_elbow_prefix_max_,
+              nominee_exactify_prefix_total_,
+              nominee_exactify_prefix_max_,
               nominee_certificate_min_remaining_lower_bound_sum_,
               nominee_certificate_min_remaining_lower_bound_max_,
               nominee_certificate_incumbent_exact_score_sum_,
               nominee_certificate_incumbent_exact_score_max_,
               nominee_exactified_until_certificate_histogram_,
               nominee_certificate_stop_depth_histogram_,
-              nominee_elbow_prefix_histogram_),
+              nominee_exactify_prefix_histogram_),
           start_time_(Clock::now()) {
         if (n_rows_ <= 0 || n_features_ <= 0) {
             throw std::invalid_argument("MSPLIT requires a non-empty binned matrix.");
@@ -664,6 +667,16 @@ class Solver {
         out.heuristic_selector_improving_split_retained_nodes = heuristic_selector_improving_split_retained_nodes_;
         out.heuristic_selector_improving_split_margin_sum = heuristic_selector_improving_split_margin_sum_;
         out.heuristic_selector_improving_split_margin_max = heuristic_selector_improving_split_margin_max_;
+        out.above_lookahead_impurity_pairs_total = above_lookahead_impurity_pairs_total_;
+        out.above_lookahead_hardloss_pairs_total = above_lookahead_hardloss_pairs_total_;
+        out.above_lookahead_impurity_bucket_before_prune_total =
+            above_lookahead_impurity_bucket_before_prune_total_;
+        out.above_lookahead_impurity_bucket_after_prune_total =
+            above_lookahead_impurity_bucket_after_prune_total_;
+        out.above_lookahead_hardloss_bucket_before_prune_total =
+            above_lookahead_hardloss_bucket_before_prune_total_;
+        out.above_lookahead_hardloss_bucket_after_prune_total =
+            above_lookahead_hardloss_bucket_after_prune_total_;
         out.heuristic_selector_nodes_by_depth = heuristic_selector_nodes_by_depth_;
         out.heuristic_selector_candidate_total_by_depth =
             heuristic_selector_candidate_total_by_depth_;
@@ -772,8 +785,8 @@ class Solver {
         out.nominee_certificate_exhausted_nodes = nominee_certificate_exhausted_nodes_;
         out.nominee_exactified_until_certificate_total = nominee_exactified_until_certificate_total_;
         out.nominee_exactified_until_certificate_max = nominee_exactified_until_certificate_max_;
-        out.nominee_elbow_prefix_total = nominee_elbow_prefix_total_;
-        out.nominee_elbow_prefix_max = nominee_elbow_prefix_max_;
+        out.nominee_exactify_prefix_total = nominee_exactify_prefix_total_;
+        out.nominee_exactify_prefix_max = nominee_exactify_prefix_max_;
         out.nominee_certificate_min_remaining_lower_bound_sum =
             nominee_certificate_min_remaining_lower_bound_sum_;
         out.nominee_certificate_min_remaining_lower_bound_max =
@@ -785,7 +798,7 @@ class Solver {
         out.nominee_exactified_until_certificate_histogram =
             nominee_exactified_until_certificate_histogram_;
         out.nominee_certificate_stop_depth_histogram = nominee_certificate_stop_depth_histogram_;
-        out.nominee_elbow_prefix_histogram = nominee_elbow_prefix_histogram_;
+        out.nominee_exactify_prefix_histogram = nominee_exactify_prefix_histogram_;
         out.atomized_feature_atom_count_histogram = atomized_feature_atom_count_histogram_;
         out.atomized_feature_block_atom_count_histogram = atomized_feature_block_atom_count_histogram_;
         out.atomized_feature_q_effective_histogram = atomized_feature_q_effective_histogram_;
@@ -877,6 +890,12 @@ class Solver {
     mutable long long heuristic_selector_improving_split_retained_nodes_ = 0;
     mutable double heuristic_selector_improving_split_margin_sum_ = 0.0;
     mutable double heuristic_selector_improving_split_margin_max_ = 0.0;
+    mutable long long above_lookahead_impurity_pairs_total_ = 0;
+    mutable long long above_lookahead_hardloss_pairs_total_ = 0;
+    mutable long long above_lookahead_impurity_bucket_before_prune_total_ = 0;
+    mutable long long above_lookahead_impurity_bucket_after_prune_total_ = 0;
+    mutable long long above_lookahead_hardloss_bucket_before_prune_total_ = 0;
+    mutable long long above_lookahead_hardloss_bucket_after_prune_total_ = 0;
     std::vector<long long> heuristic_selector_nodes_by_depth_;
     std::vector<long long> heuristic_selector_candidate_total_by_depth_;
     std::vector<long long> heuristic_selector_candidate_pruned_total_by_depth_;
@@ -888,6 +907,9 @@ class Solver {
     std::vector<double> heuristic_selector_improving_split_margin_max_by_depth_;
     mutable long long profiling_refine_calls_ = 0;
     mutable double profiling_refine_sec_ = 0.0;
+    const bool profiling_enabled_ = env_flag_enabled("MSPLIT_ENABLE_PROFILING");
+    const bool detailed_selector_telemetry_enabled_ =
+        env_flag_enabled("MSPLIT_ENABLE_DETAILED_TELEMETRY");
     mutable std::ofstream trace_stream_;
     mutable bool trace_enabled_ = false;
     mutable std::string trace_file_path_;
@@ -980,15 +1002,15 @@ class Solver {
     long long nominee_certificate_exhausted_nodes_ = 0;
     long long nominee_exactified_until_certificate_total_ = 0;
     long long nominee_exactified_until_certificate_max_ = 0;
-    long long nominee_elbow_prefix_total_ = 0;
-    long long nominee_elbow_prefix_max_ = 0;
+    long long nominee_exactify_prefix_total_ = 0;
+    long long nominee_exactify_prefix_max_ = 0;
     double nominee_certificate_min_remaining_lower_bound_sum_ = 0.0;
     double nominee_certificate_min_remaining_lower_bound_max_ = 0.0;
     double nominee_certificate_incumbent_exact_score_sum_ = 0.0;
     double nominee_certificate_incumbent_exact_score_max_ = 0.0;
     std::vector<long long> nominee_exactified_until_certificate_histogram_;
     std::vector<long long> nominee_certificate_stop_depth_histogram_;
-    std::vector<long long> nominee_elbow_prefix_histogram_;
+    std::vector<long long> nominee_exactify_prefix_histogram_;
     std::vector<long long> atomized_feature_atom_count_histogram_;
     std::vector<long long> atomized_feature_block_atom_count_histogram_;
     std::vector<long long> atomized_feature_q_effective_histogram_;
@@ -1557,7 +1579,7 @@ class Solver {
                 std::sort(members.begin(), members.end());
             }
             out.values.push_back(bin);
-            out.members.push_back(members);
+            out.members.push_back(std::move(members));
         }
         return true;
     }

@@ -436,9 +436,9 @@ PYBIND11_MODULE(_libgosdt, m) {
                 solved.nominee_exactified_until_certificate_histogram;
             out["nominee_certificate_stop_depth_histogram"] =
                 solved.nominee_certificate_stop_depth_histogram;
-            out["nominee_elbow_prefix_total"] = solved.nominee_elbow_prefix_total;
-            out["nominee_elbow_prefix_max"] = solved.nominee_elbow_prefix_max;
-            out["nominee_elbow_prefix_histogram"] = solved.nominee_elbow_prefix_histogram;
+            out["nominee_exactify_prefix_total"] = solved.nominee_exactify_prefix_total;
+            out["nominee_exactify_prefix_max"] = solved.nominee_exactify_prefix_max;
+            out["nominee_exactify_prefix_histogram"] = solved.nominee_exactify_prefix_histogram;
             out["nominee_exact_child_eval_sec"] = solved.profiling_recursive_child_eval_sec;
             out["nominee_debr_sec"] = solved.profiling_refine_sec;
             out["atomized_feature_atom_count_histogram"] = solved.atomized_feature_atom_count_histogram;
@@ -483,6 +483,18 @@ PYBIND11_MODULE(_libgosdt, m) {
                 solved.heuristic_selector_improving_split_margin_sum;
             out["heuristic_selector_improving_split_margin_max"] =
                 solved.heuristic_selector_improving_split_margin_max;
+            out["above_lookahead_impurity_pairs_total"] =
+                solved.above_lookahead_impurity_pairs_total;
+            out["above_lookahead_hardloss_pairs_total"] =
+                solved.above_lookahead_hardloss_pairs_total;
+            out["above_lookahead_impurity_bucket_before_prune_total"] =
+                solved.above_lookahead_impurity_bucket_before_prune_total;
+            out["above_lookahead_impurity_bucket_after_prune_total"] =
+                solved.above_lookahead_impurity_bucket_after_prune_total;
+            out["above_lookahead_hardloss_bucket_before_prune_total"] =
+                solved.above_lookahead_hardloss_bucket_before_prune_total;
+            out["above_lookahead_hardloss_bucket_after_prune_total"] =
+                solved.above_lookahead_hardloss_bucket_after_prune_total;
             out["heuristic_selector_nodes_by_depth"] = solved.heuristic_selector_nodes_by_depth;
             out["heuristic_selector_candidate_total_by_depth"] =
                 solved.heuristic_selector_candidate_total_by_depth;

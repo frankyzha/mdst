@@ -14,7 +14,7 @@
             return seed;
         }
         ++profiling_refine_calls_;
-        ScopedTimer refine_timer(profiling_refine_sec_);
+        ScopedTimer refine_timer(profiling_refine_sec_, profiling_enabled_);
 
         AtomizedRefinementSummary local_summary;
 
@@ -1436,10 +1436,9 @@
         if (!raw_seed.feasible || groups < 2 || groups > prepared.q_effective) {
             return coarse;
         }
-
         coarse.geometry_seed_candidate = raw_seed;
+        coarse.candidate = raw_seed;
         if (!prepared.has_block_compression) {
-            coarse.candidate = raw_seed;
             return coarse;
         }
         if (groups > (int)prepared.block_atoms.size()) {
@@ -1499,8 +1498,8 @@
         if (!refined_block.feasible) {
             refined_block = projected_block_seed;
         }
-        coarse.refined_block_assignment = refined_block.assignment;
 
+        coarse.refined_block_assignment = refined_block.assignment;
         coarse.block_candidate = lift_block_candidate_to_atoms(
             feature,
             prepared.blocks,
@@ -1609,62 +1608,39 @@
         prepared.coarse_by_groups.assign((size_t)prepared.q_effective + 1, AtomizedCoarseCandidate{});
         prepared.coarse_by_groups_hardloss.assign((size_t)prepared.q_effective + 1, AtomizedCoarseCandidate{});
 
-        const bool use_dual_families = atomized_use_dual_families();
         bool any_feasible = false;
         for (int groups = 2; groups <= prepared.q_effective; ++groups) {
-            if (use_dual_families) {
-                const AtomizedCandidatePair raw_seed_pair = solve_atomized_geometry_family_pair(
-                    prepared.atoms,
-                    prepared.atom_prefix,
-                    feature,
-                    groups);
-                AtomizedCandidate impurity_raw_seed = raw_seed_pair.impurity;
-                AtomizedCandidate hardloss_raw_seed = raw_seed_pair.misclassification;
-                impurity_raw_seed.feature = feature;
-                impurity_raw_seed.hard_loss_mode = false;
-                hardloss_raw_seed.feature = feature;
-                hardloss_raw_seed.hard_loss_mode = true;
+            const AtomizedCandidatePair raw_seed_pair = solve_atomized_geometry_family_pair(
+                prepared.atoms,
+                prepared.atom_prefix,
+                feature,
+                groups);
+            AtomizedCandidate impurity_raw_seed = raw_seed_pair.impurity;
+            AtomizedCandidate hardloss_raw_seed = raw_seed_pair.misclassification;
+            impurity_raw_seed.feature = feature;
+            impurity_raw_seed.hard_loss_mode = false;
+            hardloss_raw_seed.feature = feature;
+            hardloss_raw_seed.hard_loss_mode = true;
 
-                AtomizedCoarseCandidate coarse = prepare_folded_family_coarse(
-                    feature,
-                    prepared,
-                    groups,
-                    mu_node,
-                    impurity_raw_seed,
-                    AtomizedObjectiveMode::kImpurity);
-                AtomizedCoarseCandidate hardloss_coarse = prepare_folded_family_coarse(
-                    feature,
-                    prepared,
-                    groups,
-                    mu_node,
-                    hardloss_raw_seed,
-                    AtomizedObjectiveMode::kHardLoss);
-                if (!coarse.candidate.feasible && !hardloss_coarse.candidate.feasible) {
-                    continue;
-                }
-                prepared.coarse_by_groups[(size_t)groups] = std::move(coarse);
-                prepared.coarse_by_groups_hardloss[(size_t)groups] = std::move(hardloss_coarse);
-            } else {
-                AtomizedCandidate impurity_raw_seed = solve_atomized_geometry_family(
-                    prepared.atoms,
-                    prepared.atom_prefix,
-                    feature,
-                    groups,
-                    AtomizedObjectiveMode::kImpurity);
-                impurity_raw_seed.feature = feature;
-                impurity_raw_seed.hard_loss_mode = false;
-                AtomizedCoarseCandidate coarse = prepare_folded_family_coarse(
-                    feature,
-                    prepared,
-                    groups,
-                    mu_node,
-                    impurity_raw_seed,
-                    AtomizedObjectiveMode::kImpurity);
-                if (!coarse.candidate.feasible) {
-                    continue;
-                }
-                prepared.coarse_by_groups[(size_t)groups] = std::move(coarse);
+            AtomizedCoarseCandidate coarse = prepare_folded_family_coarse(
+                feature,
+                prepared,
+                groups,
+                mu_node,
+                impurity_raw_seed,
+                AtomizedObjectiveMode::kImpurity);
+            AtomizedCoarseCandidate hardloss_coarse = prepare_folded_family_coarse(
+                feature,
+                prepared,
+                groups,
+                mu_node,
+                hardloss_raw_seed,
+                AtomizedObjectiveMode::kHardLoss);
+            if (!coarse.candidate.feasible && !hardloss_coarse.candidate.feasible) {
+                continue;
             }
+            prepared.coarse_by_groups[(size_t)groups] = std::move(coarse);
+            prepared.coarse_by_groups_hardloss[(size_t)groups] = std::move(hardloss_coarse);
             ++telemetry.atomized_coarse_candidates;
             any_feasible = true;
         }
@@ -1676,16 +1652,12 @@
     AtomizedCandidate nominate_folded_family_candidate(
         const PreparedFeatureAtomized &prepared,
         double mu_node,
+        const AtomizedCoarseCandidate &coarse,
         AtomizedCandidate raw_seed,
         AtomizedObjectiveMode mode
     ) const {
         if (!raw_seed.feasible) {
             return raw_seed;
-        }
-        if (prepared.has_block_compression &&
-            (!prepared.block_atoms.empty()) &&
-            raw_seed.groups > (int)prepared.block_atoms.size()) {
-            return AtomizedCandidate{};
         }
         AtomizedCandidate atom_seed = raw_seed;
         std::vector<std::pair<int, int>> atom_windows;
@@ -1702,65 +1674,73 @@
                     raw_seed.assignment,
                     projected_block_assignment,
                     mixed_block)) {
-                if (std::any_of(
+                if (!std::any_of(
                         mixed_block.begin(),
                         mixed_block.end(),
                         [](unsigned char flag) { return flag != 0U; })) {
-                    return AtomizedCandidate{};
-                }
-                AtomizedCandidate projected_block_seed = candidate_from_assignment(
-                    raw_seed.feature,
-                    prepared.block_atoms,
-                    projected_block_assignment,
-                    raw_seed.groups,
-                    nullptr,
-                    0.0,
-                    mode);
-                if (projected_block_seed.feasible) {
-                    AtomizedRefinementSummary block_summary;
-                    AtomizedCandidate refined_block = refine_atomized_candidate_debr(
+                    const bool can_reuse_refined =
+                        !coarse.initial_block_assignment.empty() &&
+                        !coarse.refined_block_assignment.empty() &&
+                        coarse.initial_block_assignment.size() == projected_block_assignment.size() &&
+                        coarse.refined_block_assignment.size() == projected_block_assignment.size() &&
+                        projected_block_assignment == coarse.initial_block_assignment;
+                    AtomizedCandidate projected_block_seed = candidate_from_assignment(
+                        raw_seed.feature,
                         prepared.block_atoms,
-                        projected_block_seed,
-                        mu_node,
-                        nullptr,
-                        &block_summary,
+                        projected_block_assignment,
+                        raw_seed.groups,
                         nullptr,
                         0.0,
                         mode);
-                    record_refinement_summary(block_summary);
-                    if (!refined_block.feasible) {
-                        refined_block = projected_block_seed;
-                    }
-                    used_block_refinement = true;
-                    std::vector<std::pair<int, int>> block_windows =
-                        build_active_block_windows(
-                            projected_block_assignment,
-                            refined_block.assignment,
-                            &mixed_block);
-                    if (!block_windows.empty()) {
-                        atom_windows = block_windows_to_atom_windows(
+                    if (projected_block_seed.feasible) {
+                        AtomizedCandidate refined_block = projected_block_seed;
+                        if (can_reuse_refined) {
+                            refined_block.assignment = coarse.refined_block_assignment;
+                        } else {
+                            AtomizedRefinementSummary block_summary;
+                            refined_block = refine_atomized_candidate_debr(
+                                prepared.block_atoms,
+                                projected_block_seed,
+                                mu_node,
+                                nullptr,
+                                &block_summary,
+                                nullptr,
+                                0.0,
+                                mode);
+                            record_refinement_summary(block_summary);
+                            if (!refined_block.feasible) {
+                                refined_block = projected_block_seed;
+                            }
+                        }
+                        used_block_refinement = true;
+                        std::vector<std::pair<int, int>> block_windows =
+                            build_active_block_windows(
+                                projected_block_assignment,
+                                refined_block.assignment,
+                                &mixed_block);
+                        if (!block_windows.empty()) {
+                            atom_windows = block_windows_to_atom_windows(
+                                prepared.blocks,
+                                block_windows);
+                            if (!atom_windows.empty()) {
+                                atom_windows_ptr = &atom_windows;
+                            }
+                        }
+                        AtomizedCandidate lifted_atom_seed = lift_block_candidate_to_atoms(
+                            raw_seed.feature,
                             prepared.blocks,
-                            block_windows);
-                        if (!atom_windows.empty()) {
-                            atom_windows_ptr = &atom_windows;
+                            prepared.atoms,
+                            refined_block,
+                            &prepared.atom_adjacency_bonus,
+                            prepared.atom_adjacency_bonus_total,
+                            mode);
+                        if (lifted_atom_seed.feasible) {
+                            atom_seed = std::move(lifted_atom_seed);
+                        } else if (can_reuse_refined && coarse.block_candidate.feasible) {
+                            atom_seed = coarse.block_candidate;
                         }
                     }
-                    AtomizedCandidate lifted_atom_seed = lift_block_candidate_to_atoms(
-                        raw_seed.feature,
-                        prepared.blocks,
-                        prepared.atoms,
-                        refined_block,
-                        &prepared.atom_adjacency_bonus,
-                        prepared.atom_adjacency_bonus_total,
-                        mode);
-                    if (lifted_atom_seed.feasible) {
-                        atom_seed = std::move(lifted_atom_seed);
-                    }
-                } else {
-                    return AtomizedCandidate{};
                 }
-            } else {
-                return AtomizedCandidate{};
             }
         }
 

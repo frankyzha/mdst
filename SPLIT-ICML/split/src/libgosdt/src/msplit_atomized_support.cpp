@@ -164,14 +164,6 @@
     };
 
     bool atomized_use_dual_families() const {
-        const char *raw = std::getenv("MSPLIT_ATOM_FAMILY_MODE");
-        if (raw == nullptr || raw[0] == '\0') {
-            return true;
-        }
-        const std::string value(raw);
-        if (value == "impurity" || value == "impurity_only" || value == "single" || value == "single_family") {
-            return false;
-        }
         return true;
     }
 
