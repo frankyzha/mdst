@@ -474,65 +474,38 @@
             teacher_available_
                 ? (stats.reference_error_weight + regularization_)
                 : -kInfinity;
-        if (depth_remaining <= 0) {
+        auto return_leaf_now = [&](const char *label,
+                                   size_t preserved_features,
+                                   unsigned long long candidate_count,
+                                   double bound) {
             record_node_scale(stats);
             record_empty_candidate_curves();
             GreedyResult solved{leaf_objective, leaf_tree};
             trace_greedy_snapshot(
-                "return_leaf_depth",
+                label,
                 depth_remaining,
                 indices.size(),
-                0U,
-                0U,
+                preserved_features,
+                candidate_count,
                 0U,
                 0U,
                 0U,
                 solved.objective,
-                solved.objective,
+                bound,
                 0U);
             cache_store(state_key, solved, depth_remaining);
             return solved;
+        };
+        if (depth_remaining <= 0) {
+            return return_leaf_now("return_leaf_depth", 0U, 0U, leaf_objective);
         }
         if (stats.pure) {
-            record_node_scale(stats);
-            record_empty_candidate_curves();
-            GreedyResult solved{leaf_objective, leaf_tree};
-            trace_greedy_snapshot(
-                "return_pure",
-                depth_remaining,
-                indices.size(),
-                0U,
-                0U,
-                0U,
-                0U,
-                0U,
-                solved.objective,
-                solved.objective,
-                0U);
-            cache_store(state_key, solved, depth_remaining);
-            return solved;
+            return return_leaf_now("return_pure", 0U, 0U, leaf_objective);
         }
         if ((int)indices.size() < min_split_size_) {
-            record_node_scale(stats);
-            record_empty_candidate_curves();
-            GreedyResult solved{leaf_objective, leaf_tree};
-            trace_greedy_snapshot(
-                "return_min_split",
-                depth_remaining,
-                indices.size(),
-                0U,
-                0U,
-                0U,
-                0U,
-                0U,
-                solved.objective,
-                solved.objective,
-                0U);
-            cache_store(state_key, solved, depth_remaining);
-            return solved;
+            return return_leaf_now("return_min_split", 0U, 0U, leaf_objective);
         }
         const double mu_node = effective_sample_unit(stats);
-        const double prune_slack = mu_node;
         const bool disable_pair_prune_globally = disable_coarse_pruning_;
         auto bump_count_histogram = [](std::vector<long long> &hist, size_t bucket) {
             if (hist.size() <= bucket) {
@@ -553,23 +526,7 @@
                 candidate_evals);
         }
         if (candidate_evals.empty()) {
-            record_node_scale(stats);
-            record_empty_candidate_curves();
-            GreedyResult solved{leaf_objective, leaf_tree};
-            trace_greedy_snapshot(
-                "return_no_candidate",
-                depth_remaining,
-                indices.size(),
-                preserved_feature_count,
-                0U,
-                0U,
-                0U,
-                0U,
-                solved.objective,
-                solved.objective,
-                0U);
-            cache_store(state_key, solved, depth_remaining);
-            return solved;
+            return return_leaf_now("return_no_candidate", preserved_feature_count, 0U, leaf_objective);
         }
 
         double best_coarse_proxy = kInfinity;
@@ -577,23 +534,7 @@
             best_coarse_proxy = std::min(best_coarse_proxy, eval.cheap_score);
         }
         if (!std::isfinite(best_coarse_proxy)) {
-            record_node_scale(stats);
-            record_empty_candidate_curves();
-            GreedyResult solved{leaf_objective, leaf_tree};
-            trace_greedy_snapshot(
-                "return_no_candidate",
-                depth_remaining,
-                indices.size(),
-                preserved_feature_count,
-                0U,
-                0U,
-                0U,
-                0U,
-                solved.objective,
-                leaf_objective,
-                0U);
-            cache_store(state_key, solved, depth_remaining);
-            return solved;
+            return return_leaf_now("return_no_candidate", preserved_feature_count, 0U, leaf_objective);
         }
 
         std::vector<CandidateEval> surviving_candidate_evals;
@@ -620,23 +561,11 @@
             bump_count_histogram(greedy_feature_survivor_histogram_, feature_survivor_pair_count[feature]);
         }
         if (surviving_candidate_evals.empty()) {
-            record_node_scale(stats);
-            record_empty_candidate_curves();
-            GreedyResult solved{leaf_objective, leaf_tree};
-            trace_greedy_snapshot(
+            return return_leaf_now(
                 "return_no_pair_survivor",
-                depth_remaining,
-                indices.size(),
                 preserved_feature_count,
                 static_cast<unsigned long long>(candidate_evals.size()),
-                0U,
-                0U,
-                0U,
-                solved.objective,
-                best_coarse_proxy,
-                0U);
-            cache_store(state_key, solved, depth_remaining);
-            return solved;
+                best_coarse_proxy);
         }
 
         std::vector<NomineeEval> nominee_evals = build_nominee_evals(
@@ -645,23 +574,11 @@
             mu_node,
             depth_remaining);
         if (nominee_evals.empty()) {
-            record_node_scale(stats);
-            record_empty_candidate_curves();
-            GreedyResult solved{leaf_objective, leaf_tree};
-            trace_greedy_snapshot(
+            return return_leaf_now(
                 "return_no_nominee",
-                depth_remaining,
-                indices.size(),
                 preserved_feature_count,
                 static_cast<unsigned long long>(surviving_candidate_evals.size()),
-                0U,
-                0U,
-                0U,
-                solved.objective,
-                best_coarse_proxy,
-                0U);
-            cache_store(state_key, solved, depth_remaining);
-            return solved;
+                best_coarse_proxy);
         }
 
         auto nominee_hard_ceiling = [&](const NomineeEval &eval) {
@@ -833,50 +750,42 @@
         }
 
         if (nominee_evals.empty()) {
-            record_node_scale(stats);
-            record_empty_candidate_curves();
-            GreedyResult solved{leaf_objective, leaf_tree};
-            trace_greedy_snapshot(
+            return return_leaf_now(
                 "return_reference_pruned",
-                depth_remaining,
-                indices.size(),
                 preserved_feature_count,
                 static_cast<unsigned long long>(surviving_candidate_evals.size()),
-                0U,
-                0U,
-                0U,
-                solved.objective,
-                search_upper_bound,
-                0U);
-            cache_store(state_key, solved, depth_remaining);
-            return solved;
+                search_upper_bound);
         }
 
         std::vector<size_t> alive_indices;
         alive_indices.reserve(nominee_evals.size());
         size_t exactify_budget_count = 0U;
         if (exact_mode) {
+            size_t best_impurity_idx = std::numeric_limits<size_t>::max();
             for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
                 alive_indices.push_back(idx);
+                if (!nominee_evals[idx].candidate.hard_loss_mode &&
+                    (best_impurity_idx == std::numeric_limits<size_t>::max() ||
+                     nominee_prefer(idx, best_impurity_idx))) {
+                    best_impurity_idx = idx;
+                }
             }
-            std::stable_sort(
-                alive_indices.begin(),
-                alive_indices.end(),
-                nominee_prefer);
             exactify_budget_count = resolve_exactify_budget(nominee_evals.size());
-            const auto impurity_it = std::find_if(
-                alive_indices.begin(),
-                alive_indices.end(),
-                [&](size_t idx) { return !nominee_evals[idx].candidate.hard_loss_mode; });
-            if (impurity_it != alive_indices.end() &&
-                exactify_budget_count > 0U &&
-                static_cast<size_t>(std::distance(alive_indices.begin(), impurity_it)) >= exactify_budget_count) {
-                alive_indices[exactify_budget_count - 1U] = *impurity_it;
-                std::stable_sort(
+            if (exactify_budget_count < alive_indices.size()) {
+                auto prefix_end =
+                    alive_indices.begin() + static_cast<std::ptrdiff_t>(exactify_budget_count);
+                std::nth_element(
                     alive_indices.begin(),
-                    alive_indices.begin() + static_cast<std::ptrdiff_t>(exactify_budget_count),
+                    prefix_end,
+                    alive_indices.end(),
                     nominee_prefer);
+                alive_indices.resize(exactify_budget_count);
+                if (best_impurity_idx != std::numeric_limits<size_t>::max() &&
+                    std::find(alive_indices.begin(), alive_indices.end(), best_impurity_idx) == alive_indices.end()) {
+                    alive_indices.back() = best_impurity_idx;
+                }
             }
+            std::sort(alive_indices.begin(), alive_indices.end(), nominee_prefer);
         } else {
             size_t best_impurity_idx = std::numeric_limits<size_t>::max();
             size_t best_hardloss_idx = std::numeric_limits<size_t>::max();
@@ -895,13 +804,6 @@
             }
             if (best_impurity_idx != std::numeric_limits<size_t>::max()) {
                 alive_indices.push_back(best_impurity_idx);
-            }
-            if (best_hardloss_idx != std::numeric_limits<size_t>::max() &&
-                best_hardloss_idx != best_impurity_idx &&
-                (best_impurity_idx == std::numeric_limits<size_t>::max() ||
-                 nominee_hard_ceiling(nominee_evals[best_hardloss_idx]) + kEpsUpdate <
-                     nominee_hard_ceiling(nominee_evals[best_impurity_idx]))) {
-                alive_indices.push_back(best_hardloss_idx);
             }
             if (alive_indices.empty()) {
                 for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {

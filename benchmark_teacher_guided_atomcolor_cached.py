@@ -6,12 +6,12 @@ import importlib.util
 import json
 import math
 import os
+import re
 import time
 from pathlib import Path
 import sys
 
 import numpy as np
-from sklearn.model_selection import train_test_split
 
 REPO_ROOT = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
@@ -50,6 +50,8 @@ def _protocol_split_indices(
     test_size: float,
     val_size: float,
 ) -> dict[str, np.ndarray]:
+    from sklearn.model_selection import train_test_split
+
     total = float(test_size) + float(val_size)
     if total >= 1.0:
         raise ValueError(f"test_size + val_size must be < 1.0, got {total:.6f}")
@@ -101,6 +103,38 @@ def default_cache_path(
     if CACHE_VERSION:
         stem += f"_v{CACHE_VERSION}"
     return REPO_ROOT / "results" / "cache" / "lightgbm_binner" / f"{stem}.npz"
+
+
+def _cache_stem_parts(stem: str) -> tuple[str, int | None]:
+    match = re.match(r"^(?P<base>.+)_v(?P<version>\d+)$", stem)
+    if match is None:
+        return stem, None
+    return match.group("base"), int(match.group("version"))
+
+
+def compatible_cache_candidates(requested_path: Path) -> list[Path]:
+    requested = requested_path.resolve()
+    parent = requested.parent
+    base_stem, _ = _cache_stem_parts(requested.stem)
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+
+    def add_candidate(path: Path) -> None:
+        resolved = path.resolve()
+        if resolved in seen:
+            return
+        seen.add(resolved)
+        candidates.append(resolved)
+
+    add_candidate(requested)
+    versioned = []
+    for path in parent.glob(f"{base_stem}_v*.npz"):
+        _, version = _cache_stem_parts(path.stem)
+        versioned.append((version if version is not None else -1, path))
+    for _, path in sorted(versioned, key=lambda item: item[0], reverse=True):
+        add_candidate(path)
+    add_candidate(parent / f"{base_stem}.npz")
+    return candidates
 
 
 def derive_min_child_size(*, leaf_frac: float, n_fit: int) -> int:
@@ -189,6 +223,7 @@ def build_cache(
     print(f"[cache] binner done in {build_seconds:.3f}s", flush=True)
 
     Z_fit = binner.transform(X_fit_proc)
+    Z_val = binner.transform(X_val_proc)
     Z_test = binner.transform(X_test_proc)
     arrays = {
         "idx_fit": np.asarray(idx_fit, dtype=np.int32),
@@ -201,6 +236,7 @@ def build_cache(
         "y_val": np.asarray(y_val, dtype=np.int32),
         "y_test": np.asarray(y_test, dtype=np.int32),
         "Z_fit": np.asarray(Z_fit, dtype=np.int32),
+        "Z_val": np.asarray(Z_val, dtype=np.int32),
         "Z_test": np.asarray(Z_test, dtype=np.int32),
         "teacher_logit": np.asarray(getattr(binner, "teacher_train_logit"), dtype=np.float64),
         "teacher_boundary_gain": np.asarray(getattr(binner, "boundary_gain_per_feature"), dtype=np.float64),
@@ -238,6 +274,38 @@ def load_cache(cache_path: Path) -> dict[str, np.ndarray]:
     with np.load(cache_path, allow_pickle=False) as npz:
         cache = {k: npz[k] for k in npz.files}
     return cache
+
+
+def resolve_compatible_cache(
+    requested_path: Path,
+    *,
+    force_rebuild: bool,
+) -> tuple[Path, dict[str, np.ndarray], dict[str, object], bool, bool]:
+    if force_rebuild:
+        return requested_path, {}, {}, False, False
+
+    for candidate in compatible_cache_candidates(requested_path):
+        if not candidate.exists():
+            continue
+        print(f"[cache] probing: {candidate}", flush=True)
+        cache = load_cache(candidate)
+        cache_ok, missing = cache_is_complete(cache)
+        if not cache_ok:
+            print(f"[cache] stale cache skipped (missing: {missing})", flush=True)
+            continue
+        meta_path = candidate.with_suffix(".json")
+        if meta_path.exists():
+            cache_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        else:
+            cache_meta = {}
+        used_fallback = candidate.resolve() != requested_path.resolve()
+        if used_fallback:
+            print(f"[cache] compatible fallback hit: {candidate}", flush=True)
+        else:
+            print(f"[cache] hit: {candidate}", flush=True)
+        return candidate, cache, cache_meta, True, used_fallback
+
+    return requested_path, {}, {}, False, False
 
 
 def load_local_libgosdt():
@@ -356,8 +424,10 @@ def run_cached_msplit(
     print("[msplit] starting native atomized fit from cached LightGBM bins", flush=True)
     libgosdt = load_local_libgosdt()
     z_fit = np.asarray(cache["Z_fit"], dtype=np.int32)
+    z_val = np.asarray(cache["Z_val"], dtype=np.int32) if "Z_val" in cache else None
     z_test = np.asarray(cache["Z_test"], dtype=np.int32)
     y_fit = np.asarray(cache["y_fit"], dtype=np.int32)
+    y_val = np.asarray(cache["y_val"], dtype=np.int32) if "y_val" in cache else None
     y_test = np.asarray(cache["y_test"], dtype=np.int32)
     teacher_logit = np.asarray(cache["teacher_logit"], dtype=np.float64)
     sample_weight = np.full(z_fit.shape[0], 1.0 / float(max(1, z_fit.shape[0])), dtype=np.float64)
@@ -384,11 +454,13 @@ def run_cached_msplit(
     print(f"[msplit] fit done in {fit_seconds:.3f}s", flush=True)
     tree = json.loads(str(cpp_result["tree"]))
     pred_train = predict_tree(tree, z_fit)
+    pred_val = predict_tree(tree, z_val) if z_val is not None else None
     pred_test = predict_tree(tree, z_test)
     stats = tree_stats(tree)
     result = {
         "fit_seconds": float(fit_seconds),
         "train_accuracy": float(np.mean(pred_train == y_fit)),
+        "val_accuracy": float(np.mean(pred_val == y_val)) if pred_val is not None and y_val is not None else None,
         "test_accuracy": float(np.mean(pred_test == y_test)),
         "objective": float(cpp_result["objective"]),
         "root_feature": int(tree.get("feature", -1)),
@@ -512,11 +584,52 @@ def run_cached_msplit(
         "nominee_certificate_stop_depth_histogram": cpp_result.get(
             "nominee_certificate_stop_depth_histogram", []
         ),
-        "nominee_elbow_prefix_total": int(cpp_result.get("nominee_elbow_prefix_total", 0)),
-        "nominee_elbow_prefix_max": int(cpp_result.get("nominee_elbow_prefix_max", 0)),
-        "nominee_elbow_prefix_histogram": cpp_result.get(
-            "nominee_elbow_prefix_histogram", []
+        "nominee_exactify_prefix_total": int(
+            cpp_result.get(
+                "nominee_exactify_prefix_total",
+                cpp_result.get("nominee_elbow_prefix_total", 0),
+            )
         ),
+        "nominee_exactify_prefix_max": int(
+            cpp_result.get(
+                "nominee_exactify_prefix_max",
+                cpp_result.get("nominee_elbow_prefix_max", 0),
+            )
+        ),
+        "nominee_exactify_prefix_histogram": cpp_result.get(
+            "nominee_exactify_prefix_histogram",
+            cpp_result.get("nominee_elbow_prefix_histogram", []),
+        ),
+        "profiling_lp_solve_calls": int(cpp_result.get("profiling_lp_solve_calls", 0)),
+        "profiling_lp_solve_sec": float(cpp_result.get("profiling_lp_solve_sec", 0.0)),
+        "profiling_pricing_calls": int(cpp_result.get("profiling_pricing_calls", 0)),
+        "profiling_pricing_sec": float(cpp_result.get("profiling_pricing_sec", 0.0)),
+        "profiling_greedy_complete_calls": int(
+            cpp_result.get("profiling_greedy_complete_calls", 0)
+        ),
+        "profiling_greedy_complete_sec": float(
+            cpp_result.get("profiling_greedy_complete_sec", 0.0)
+        ),
+        "profiling_greedy_complete_calls_by_depth": cpp_result.get(
+            "profiling_greedy_complete_calls_by_depth", []
+        ),
+        "profiling_feature_prepare_sec": float(
+            cpp_result.get("profiling_feature_prepare_sec", 0.0)
+        ),
+        "profiling_candidate_nomination_sec": float(
+            cpp_result.get("profiling_candidate_nomination_sec", 0.0)
+        ),
+        "profiling_candidate_shortlist_sec": float(
+            cpp_result.get("profiling_candidate_shortlist_sec", 0.0)
+        ),
+        "profiling_candidate_generation_sec": float(
+            cpp_result.get("profiling_candidate_generation_sec", 0.0)
+        ),
+        "profiling_recursive_child_eval_sec": float(
+            cpp_result.get("profiling_recursive_child_eval_sec", 0.0)
+        ),
+        "profiling_refine_calls": int(cpp_result.get("profiling_refine_calls", 0)),
+        "profiling_refine_sec": float(cpp_result.get("profiling_refine_sec", 0.0)),
         "atomized_feature_atom_count_histogram": cpp_result.get("atomized_feature_atom_count_histogram", []),
         "atomized_feature_block_atom_count_histogram": cpp_result.get(
             "atomized_feature_block_atom_count_histogram", []
@@ -548,6 +661,33 @@ def run_cached_msplit(
         ),
         "heuristic_selector_improving_split_margin_max": float(
             cpp_result.get("heuristic_selector_improving_split_margin_max", 0.0)
+        ),
+        "above_lookahead_impurity_pairs_total": int(
+            cpp_result.get("above_lookahead_impurity_pairs_total", 0)
+        ),
+        "above_lookahead_hardloss_pairs_total": int(
+            cpp_result.get("above_lookahead_hardloss_pairs_total", 0)
+        ),
+        "above_lookahead_single_pairs_total": int(
+            cpp_result.get("above_lookahead_single_pairs_total", 0)
+        ),
+        "above_lookahead_impurity_bucket_before_prune_total": int(
+            cpp_result.get("above_lookahead_impurity_bucket_before_prune_total", 0)
+        ),
+        "above_lookahead_impurity_bucket_after_prune_total": int(
+            cpp_result.get("above_lookahead_impurity_bucket_after_prune_total", 0)
+        ),
+        "above_lookahead_hardloss_bucket_before_prune_total": int(
+            cpp_result.get("above_lookahead_hardloss_bucket_before_prune_total", 0)
+        ),
+        "above_lookahead_hardloss_bucket_after_prune_total": int(
+            cpp_result.get("above_lookahead_hardloss_bucket_after_prune_total", 0)
+        ),
+        "above_lookahead_single_bucket_before_prune_total": int(
+            cpp_result.get("above_lookahead_single_bucket_before_prune_total", 0)
+        ),
+        "above_lookahead_single_bucket_after_prune_total": int(
+            cpp_result.get("above_lookahead_single_bucket_after_prune_total", 0)
         ),
         "heuristic_selector_nodes_by_depth": cpp_result.get("heuristic_selector_nodes_by_depth", []),
         "heuristic_selector_candidate_total_by_depth": cpp_result.get(
@@ -748,18 +888,13 @@ def main() -> int:
             resolved_min_child_size,
         )
 
-    cache_hit = cache_path.exists() and not args.force_rebuild_cache
-    if cache_hit:
-        print(f"[cache] hit: {cache_path}", flush=True)
-        cache = load_cache(cache_path)
-        cache_ok, missing = cache_is_complete(cache)
-        if not cache_ok:
-            print(f"[cache] stale cache detected, rebuilding (missing: {missing})", flush=True)
-            cache_hit = False
-            cache = {}
-        cache_meta = json.loads(cache_path.with_suffix(".json").read_text(encoding="utf-8")) if cache_path.with_suffix(".json").exists() else {}
-    else:
+    cache_resolved_path, cache, cache_meta, cache_hit, cache_used_fallback = resolve_compatible_cache(
+        cache_path,
+        force_rebuild=args.force_rebuild_cache,
+    )
+    if not cache_hit:
         print(f"[cache] miss: {cache_path}", flush=True)
+        cache_resolved_path = cache_path
         cache_meta = {}
 
     if not cache_hit:
@@ -773,12 +908,12 @@ def main() -> int:
             min_samples_leaf=args.min_samples_leaf,
             min_child_size=resolved_min_child_size,
             lgb_num_threads=args.lgb_num_threads,
-            cache_path=cache_path,
+            cache_path=cache_resolved_path,
         )
-        cache_meta = json.loads(cache_path.with_suffix(".json").read_text(encoding="utf-8"))
+        cache_meta = json.loads(cache_resolved_path.with_suffix(".json").read_text(encoding="utf-8"))
 
     if args.build_cache_only:
-        print(f"[cache] build-only complete: {cache_path}", flush=True)
+        print(f"[cache] build-only complete: {cache_resolved_path}", flush=True)
         return 0
 
     result = run_cached_msplit(
@@ -796,8 +931,10 @@ def main() -> int:
             "dataset": args.dataset,
             "depth": int(args.depth),
             "full_depth_budget": int(args.depth),
-            "cache_path": str(cache_path),
+            "cache_path": str(cache_resolved_path),
+            "cache_requested_path": str(cache_path),
             "cache_hit": bool(cache_hit),
+            "cache_used_compatible_fallback": bool(cache_used_fallback),
             "cache_build_seconds": float(cache_meta.get("build_seconds", 0.0)) if cache_meta else 0.0,
             "resolved_min_split_size": int(resolved_min_split_size),
             "resolved_min_child_size": int(resolved_min_child_size),
