@@ -85,8 +85,8 @@ _NATIVE_INT_METRIC_KEYS = _metric_keys(
     nominee_incumbent_updates
     nominee_threatening_samples
     nominee_threatening_max
-    nominee_elbow_prefix_total
-    nominee_elbow_prefix_max
+    nominee_exactify_prefix_total
+    nominee_exactify_prefix_max
     profiling_lp_solve_calls
     profiling_pricing_calls
     profiling_greedy_complete_calls
@@ -262,7 +262,7 @@ _NATIVE_LIST_METRIC_KEYS = _metric_keys(
     per_node_mu_node
     per_node_candidate_upper_bounds
     per_node_candidate_lower_bounds
-    nominee_elbow_prefix_histogram
+    nominee_exactify_prefix_histogram
     profiling_greedy_complete_calls_by_depth
     prism_child_state_use_histogram
     """

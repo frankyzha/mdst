@@ -163,10 +163,6 @@
         kNone
     };
 
-    bool atomized_use_dual_families() const {
-        return true;
-    }
-
     AtomizedCompressionRule atomized_compression_rule() const {
         const char *raw = std::getenv("MSPLIT_ATOM_COMPRESSION_RULE");
         if (raw == nullptr || raw[0] == '\0') {

@@ -531,7 +531,6 @@
         const double mu_node = effective_sample_unit(stats);
         const double prune_slack = mu_node;
         const bool disable_pair_prune_globally = disable_coarse_pruning_;
-        const bool use_dual_families_here = atomized_use_dual_families();
         auto bump_count_histogram = [](std::vector<long long> &hist, size_t bucket) {
             if (hist.size() <= bucket) {
                 hist.resize(bucket + 1, 0LL);
@@ -718,96 +717,93 @@
         alive_indices.reserve(nominee_evals.size());
         size_t exactify_budget_count = 0U;
         if (exact_mode) {
-            const bool dual_family_buckets = use_dual_families_here;
-            if (dual_family_buckets) {
-                std::vector<size_t> impurity_indices;
-                std::vector<size_t> hardloss_indices;
-                impurity_indices.reserve(nominee_evals.size());
-                hardloss_indices.reserve(nominee_evals.size());
-                for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
-                    if (nominee_evals[idx].candidate.hard_loss_mode) {
-                        hardloss_indices.push_back(idx);
-                    } else {
-                        impurity_indices.push_back(idx);
-                    }
+            std::vector<size_t> impurity_indices;
+            std::vector<size_t> hardloss_indices;
+            impurity_indices.reserve(nominee_evals.size());
+            hardloss_indices.reserve(nominee_evals.size());
+            for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
+                if (nominee_evals[idx].candidate.hard_loss_mode) {
+                    hardloss_indices.push_back(idx);
+                } else {
+                    impurity_indices.push_back(idx);
                 }
-                above_lookahead_impurity_bucket_before_prune_total_ +=
-                    static_cast<long long>(impurity_indices.size());
-                above_lookahead_hardloss_bucket_before_prune_total_ +=
-                    static_cast<long long>(hardloss_indices.size());
-
-                auto prune_bucket_by_proxy = [&](std::vector<size_t> &bucket) {
-                    if (bucket.empty()) {
-                        return;
-                    }
-                    const bool hard_loss_bucket =
-                        nominee_evals[bucket.front()].candidate.hard_loss_mode;
-                    double best_bucket_proxy = kInfinity;
-                    for (size_t idx : bucket) {
-                        best_bucket_proxy = std::min(best_bucket_proxy, nominee_evals[idx].cheap_score);
-                    }
-                    if (!std::isfinite(best_bucket_proxy)) {
-                        return;
-                    }
-                    const double bucket_slack = hard_loss_bucket ? (2.0 * mu_node) : mu_node;
-                    const double bucket_cutoff = best_bucket_proxy + bucket_slack + kEpsUpdate;
-                    std::vector<size_t> survivors;
-                    survivors.reserve(bucket.size());
-                    for (size_t idx : bucket) {
-                        if (nominee_evals[idx].cheap_score <= bucket_cutoff) {
-                            survivors.push_back(idx);
-                        }
-                    }
-                    bucket.swap(survivors);
-                };
-
-                prune_bucket_by_proxy(impurity_indices);
-                prune_bucket_by_proxy(hardloss_indices);
-                above_lookahead_impurity_bucket_after_prune_total_ +=
-                    static_cast<long long>(impurity_indices.size());
-                above_lookahead_hardloss_bucket_after_prune_total_ +=
-                    static_cast<long long>(hardloss_indices.size());
-
-                std::stable_sort(
-                    impurity_indices.begin(),
-                    impurity_indices.end(),
-                    nominee_family_prefer);
-                std::stable_sort(
-                    hardloss_indices.begin(),
-                    hardloss_indices.end(),
-                    nominee_family_prefer);
-
-                std::vector<unsigned char> selected_mask(nominee_evals.size(), 0U);
-                auto append_bucket_prefix = [&](const std::vector<size_t> &bucket) {
-                    const size_t bucket_budget = resolve_exactify_budget(bucket.size());
-                    exactify_budget_count += bucket_budget;
-                    for (size_t order = 0; order < bucket_budget; ++order) {
-                        const size_t idx = bucket[order];
-                        if (!selected_mask[idx]) {
-                            selected_mask[idx] = 1U;
-                            alive_indices.push_back(idx);
-                        }
-                    }
-                };
-                append_bucket_prefix(impurity_indices);
-                append_bucket_prefix(hardloss_indices);
-
-                std::vector<size_t> deferred_indices;
-                deferred_indices.reserve(nominee_evals.size() - alive_indices.size());
-                for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
-                    if (!selected_mask[idx]) {
-                        deferred_indices.push_back(idx);
-                    }
-                }
-                std::stable_sort(
-                    deferred_indices.begin(),
-                    deferred_indices.end(),
-                    nominee_prefer);
-                alive_indices.insert(
-                    alive_indices.end(),
-                    deferred_indices.begin(),
-                    deferred_indices.end());
             }
+            above_lookahead_impurity_bucket_before_prune_total_ +=
+                static_cast<long long>(impurity_indices.size());
+            above_lookahead_hardloss_bucket_before_prune_total_ +=
+                static_cast<long long>(hardloss_indices.size());
+
+            auto prune_bucket_by_proxy = [&](std::vector<size_t> &bucket) {
+                if (bucket.empty()) {
+                    return;
+                }
+                const bool hard_loss_bucket =
+                    nominee_evals[bucket.front()].candidate.hard_loss_mode;
+                double best_bucket_proxy = kInfinity;
+                for (size_t idx : bucket) {
+                    best_bucket_proxy = std::min(best_bucket_proxy, nominee_evals[idx].cheap_score);
+                }
+                if (!std::isfinite(best_bucket_proxy)) {
+                    return;
+                }
+                const double bucket_slack = hard_loss_bucket ? (2.0 * mu_node) : mu_node;
+                const double bucket_cutoff = best_bucket_proxy + bucket_slack + kEpsUpdate;
+                std::vector<size_t> survivors;
+                survivors.reserve(bucket.size());
+                for (size_t idx : bucket) {
+                    if (nominee_evals[idx].cheap_score <= bucket_cutoff) {
+                        survivors.push_back(idx);
+                    }
+                }
+                bucket.swap(survivors);
+            };
+
+            prune_bucket_by_proxy(impurity_indices);
+            prune_bucket_by_proxy(hardloss_indices);
+            above_lookahead_impurity_bucket_after_prune_total_ +=
+                static_cast<long long>(impurity_indices.size());
+            above_lookahead_hardloss_bucket_after_prune_total_ +=
+                static_cast<long long>(hardloss_indices.size());
+
+            std::stable_sort(
+                impurity_indices.begin(),
+                impurity_indices.end(),
+                nominee_family_prefer);
+            std::stable_sort(
+                hardloss_indices.begin(),
+                hardloss_indices.end(),
+                nominee_family_prefer);
+
+            std::vector<unsigned char> selected_mask(nominee_evals.size(), 0U);
+            auto append_bucket_prefix = [&](const std::vector<size_t> &bucket) {
+                const size_t bucket_budget = resolve_exactify_budget(bucket.size());
+                exactify_budget_count += bucket_budget;
+                for (size_t order = 0; order < bucket_budget; ++order) {
+                    const size_t idx = bucket[order];
+                    if (!selected_mask[idx]) {
+                        selected_mask[idx] = 1U;
+                        alive_indices.push_back(idx);
+                    }
+                }
+            };
+            append_bucket_prefix(impurity_indices);
+            append_bucket_prefix(hardloss_indices);
+
+            std::vector<size_t> deferred_indices;
+            deferred_indices.reserve(nominee_evals.size() - alive_indices.size());
+            for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
+                if (!selected_mask[idx]) {
+                    deferred_indices.push_back(idx);
+                }
+            }
+            std::stable_sort(
+                deferred_indices.begin(),
+                deferred_indices.end(),
+                nominee_prefer);
+            alive_indices.insert(
+                alive_indices.end(),
+                deferred_indices.begin(),
+                deferred_indices.end());
         } else {
             alive_indices.reserve(nominee_evals.size());
             for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
