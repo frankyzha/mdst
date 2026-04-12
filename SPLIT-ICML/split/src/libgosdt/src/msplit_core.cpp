@@ -855,8 +855,6 @@ class Solver {
     double time_limit_seconds_;
     int max_branching_;
     int exactify_top_k_ = 0;
-    bool disable_coarse_pruning_ = env_flag_enabled("MSPLIT_DISABLE_COARSE_PRUNING");
-
     long long greedy_internal_nodes_ = 0;
     mutable long long greedy_subproblem_calls_ = 0;
     mutable long long exact_dp_subproblem_calls_above_lookahead_ = 0;

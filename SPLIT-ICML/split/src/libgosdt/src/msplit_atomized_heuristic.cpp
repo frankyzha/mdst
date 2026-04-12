@@ -564,8 +564,7 @@
             return return_leaf_now("return_min_split", 0U, 0U, leaf_objective);
         }
         const double mu_node = effective_sample_unit(stats);
-        const bool disable_pair_prune_globally =
-            disable_coarse_pruning_ || current_depth == effective_lookahead_depth_;
+        const bool keep_all_pairs = current_depth == effective_lookahead_depth_;
         auto bump_count_histogram = [](std::vector<long long> &hist, size_t bucket) {
             if (hist.size() <= bucket) {
                 hist.resize(bucket + 1, 0LL);
@@ -599,7 +598,7 @@
         surviving_candidate_evals.reserve(candidate_evals.size());
         std::vector<size_t> feature_survivor_pair_count((size_t)n_features_, 0U);
         size_t pruned_pair_count = 0U;
-        if (disable_pair_prune_globally) {
+        if (keep_all_pairs) {
             surviving_candidate_evals = candidate_evals;
             for (const CandidateEval &eval : candidate_evals) {
                 ++feature_survivor_pair_count[(size_t)eval.feature];
@@ -897,9 +896,9 @@
         }
 
         std::vector<size_t> alive_indices;
-        alive_indices.reserve(nominee_evals.size());
         size_t exactify_budget_count = 0U;
         if (exact_mode) {
+            alive_indices.reserve(nominee_evals.size());
             size_t best_impurity_idx = std::numeric_limits<size_t>::max();
             size_t best_hardloss_idx = std::numeric_limits<size_t>::max();
             for (size_t idx = 0; idx < nominee_evals.size(); ++idx) {
@@ -958,13 +957,6 @@
             }
             std::sort(alive_indices.begin(), alive_indices.end(), nominee_prefer);
         } else {
-            size_t best_idx = 0U;
-            for (size_t idx = 1; idx < nominee_evals.size(); ++idx) {
-                if (nominee_prefer(idx, best_idx)) {
-                    best_idx = idx;
-                }
-            }
-            alive_indices.push_back(best_idx);
             exactify_budget_count = 1U;
         }
 
@@ -977,16 +969,16 @@
         std::vector<double> node_candidate_boundary_penalty;
         std::vector<long long> node_candidate_components;
         if (detailed_selector_telemetry_enabled_) {
-            node_candidate_upper_bounds.reserve(alive_indices.size());
-            node_candidate_lower_bounds.reserve(alive_indices.size());
-            node_candidate_hard_loss.reserve(alive_indices.size());
-            node_candidate_impurity_objective.reserve(alive_indices.size());
-            node_candidate_hard_impurity.reserve(alive_indices.size());
-            node_candidate_soft_impurity.reserve(alive_indices.size());
-            node_candidate_boundary_penalty.reserve(alive_indices.size());
-            node_candidate_components.reserve(alive_indices.size());
-            for (size_t idx : alive_indices) {
-                const NomineeEval &eval = nominee_evals[idx];
+            const size_t candidate_curve_count = exact_mode ? alive_indices.size() : 1U;
+            node_candidate_upper_bounds.reserve(candidate_curve_count);
+            node_candidate_lower_bounds.reserve(candidate_curve_count);
+            node_candidate_hard_loss.reserve(candidate_curve_count);
+            node_candidate_impurity_objective.reserve(candidate_curve_count);
+            node_candidate_hard_impurity.reserve(candidate_curve_count);
+            node_candidate_soft_impurity.reserve(candidate_curve_count);
+            node_candidate_boundary_penalty.reserve(candidate_curve_count);
+            node_candidate_components.reserve(candidate_curve_count);
+            const auto record_candidate_curve = [&](const NomineeEval &eval) {
                 const AtomizedScore &score = eval.candidate.score;
                 node_candidate_upper_bounds.push_back(eval.upper_bound);
                 node_candidate_lower_bounds.push_back(eval.lower_bound);
@@ -997,6 +989,13 @@
                 node_candidate_soft_impurity.push_back(score.soft_impurity);
                 node_candidate_boundary_penalty.push_back(score.boundary_penalty);
                 node_candidate_components.push_back((long long)score.components);
+            };
+            if (exact_mode) {
+                for (size_t idx : alive_indices) {
+                    record_candidate_curve(nominee_evals[idx]);
+                }
+            } else {
+                record_candidate_curve(nominee_evals.front());
             }
         }
         record_node_scale(stats);
@@ -1184,41 +1183,32 @@
             return exact_results[idx];
         };
 
-        const size_t exactify_limit = std::min(exactify_budget_count, alive_indices.size());
-        for (size_t order = 0; order < exactify_limit; ++order) {
-            const size_t idx = alive_indices[order];
-            if (finalized[idx]) {
-                continue;
-            }
-            const ExactNomineeResult &result = exactify_nominee(idx);
-            if (result.valid && result.tree &&
-                (!best_exact_tree || result.objective + kEpsUpdate < best_exact_objective ||
-                 (best_exact_idx < nominee_evals.size() &&
-                  std::abs(result.objective - best_exact_objective) <= kEpsUpdate &&
-                  nominee_prefer(idx, best_exact_idx)))) {
-                best_exact_objective = result.objective;
-                best_exact_tree = result.tree;
-                best_exact_idx = idx;
-                ++incumbent_update_count;
-            }
-        }
-        if (!exact_mode && depth_remaining > 1 && best_exact_objective + kEpsUpdate >= leaf_objective) {
-            for (size_t order = exactify_limit; order < alive_indices.size(); ++order) {
+        if (exact_mode) {
+            const size_t exactify_limit = std::min(exactify_budget_count, alive_indices.size());
+            for (size_t order = 0; order < exactify_limit; ++order) {
                 const size_t idx = alive_indices[order];
                 if (finalized[idx]) {
                     continue;
                 }
                 const ExactNomineeResult &result = exactify_nominee(idx);
-                if (!result.valid || !result.tree) {
-                    continue;
-                }
-                if (result.objective + kEpsUpdate < leaf_objective) {
+                if (result.valid && result.tree &&
+                    (!best_exact_tree || result.objective + kEpsUpdate < best_exact_objective ||
+                     (best_exact_idx < nominee_evals.size() &&
+                      std::abs(result.objective - best_exact_objective) <= kEpsUpdate &&
+                      nominee_prefer(idx, best_exact_idx)))) {
                     best_exact_objective = result.objective;
                     best_exact_tree = result.tree;
                     best_exact_idx = idx;
                     ++incumbent_update_count;
-                    break;
                 }
+            }
+        } else {
+            const ExactNomineeResult &result = exactify_nominee(0U);
+            if (result.valid && result.tree && result.objective + kEpsUpdate < best_exact_objective) {
+                best_exact_objective = result.objective;
+                best_exact_tree = result.tree;
+                best_exact_idx = 0U;
+                ++incumbent_update_count;
             }
         }
         const GreedyResult solved = (best_exact_tree && best_exact_objective + kEpsUpdate < leaf_objective)
