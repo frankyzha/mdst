@@ -10,7 +10,7 @@ def _source_root() -> Path:
 def _current_solver_source_text() -> dict[str, str]:
     root = _source_root()
     core_source = root / "msplit_core.cpp"
-    selector_source = root / "msplit_linear.cpp"
+    selector_source = root / "msplit_nonlinear.cpp"
     support_source = root / "msplit_atomized_support.cpp"
     return {
         "core": core_source.read_text(encoding="utf-8"),
@@ -71,13 +71,13 @@ def test_current_sources_have_no_legacy_selector_or_path_lp_helpers():
 def test_current_solver_uses_single_active_selector_source():
     root = _source_root()
     core_text = _current_solver_source_text()["core"]
-    linear_text = _current_solver_source_text()["selector"]
+    nonlinear_text = _current_solver_source_text()["selector"]
     init_text = (Path(__file__).resolve().parents[1] / "src" / "split" / "__init__.py").read_text(encoding="utf-8")
 
-    assert '#include "msplit_linear.cpp"' in core_text
-    assert '#include "msplit_atomized_support.cpp"' in linear_text
+    assert '#include "msplit_nonlinear.cpp"' in core_text
+    assert '#include "msplit_atomized.cpp"' in nonlinear_text
     assert "MSPLIT_USE_BACKUP_SELECTOR" not in core_text
-    assert (root / "msplit_nonlinear.cpp").exists()
+    assert (root / "msplit_linear.cpp").exists()
     assert not (root / "msplit_exact_lazy.cpp").exists()
     assert "MSPLIT_RUSHDP" not in init_text
 

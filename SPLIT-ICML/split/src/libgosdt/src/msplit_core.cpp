@@ -1630,8 +1630,8 @@ class Solver {
 
     #include "msplit_debug.cpp"
     // Keep one explicit active selector path instead of hiding it behind a
-    // build-time switch. The current production solver lives in msplit_linear.cpp.
-    #include "msplit_linear.cpp"
+    // build-time switch. The current production solver lives in msplit_nonlinear.cpp.
+    #include "msplit_nonlinear.cpp"
 };
 
 }  // namespace
