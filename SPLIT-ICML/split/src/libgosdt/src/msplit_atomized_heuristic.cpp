@@ -169,6 +169,7 @@
         int groups = 0;
         double cheap_score = kInfinity;
         double cheap_lower_bound = kInfinity;
+        double cheap_hard_ceiling = kInfinity;
     };
 
     struct NomineeEval {
@@ -313,6 +314,9 @@
                     eval.cheap_score = score;
                     eval.cheap_lower_bound = std::min(prepared_ref.atom_hard_floor, prepared_ref.atom_imp_floor) +
                         mu_node * static_cast<double>(eval.groups);
+                    eval.cheap_hard_ceiling =
+                        impurity_coarse.candidate.score.hard_loss +
+                        regularization_ * static_cast<double>(eval.groups);
                 }
 
                 if (hardloss_feasible) {
@@ -327,6 +331,13 @@
                         eval.cheap_score = score;
                         eval.cheap_lower_bound = std::min(prepared_ref.atom_hard_floor, prepared_ref.atom_imp_floor) +
                             mu_node * static_cast<double>(eval.groups);
+                    }
+                    const double hardloss_ceiling =
+                        hardloss_coarse.candidate.score.hard_loss +
+                        regularization_ * static_cast<double>(eval.groups);
+                    if (!std::isfinite(eval.cheap_hard_ceiling) ||
+                        hardloss_ceiling < eval.cheap_hard_ceiling - kEpsUpdate) {
+                        eval.cheap_hard_ceiling = hardloss_ceiling;
                     }
                 }
 
@@ -635,6 +646,13 @@
             return return_leaf_now("return_no_candidate", preserved_feature_count, 0U, leaf_objective);
         }
 
+        double search_upper_bound = leaf_objective;
+        for (const CandidateEval &eval : candidate_evals) {
+            if (std::isfinite(eval.cheap_hard_ceiling)) {
+                search_upper_bound = std::min(search_upper_bound, eval.cheap_hard_ceiling);
+            }
+        }
+
         double best_coarse_proxy = kInfinity;
         for (const CandidateEval &eval : candidate_evals) {
             best_coarse_proxy = std::min(best_coarse_proxy, eval.cheap_score);
@@ -654,12 +672,82 @@
             }
         } else {
             const double pair_prune_cutoff = best_coarse_proxy + mu_node + kEpsUpdate;
+            std::vector<CandidateEval> reference_extra_candidates;
+            const bool use_reference_pair_extras =
+                above_lookahead &&
+                teacher_available_ &&
+                preserved_feature_count >= 64U;
+            if (use_reference_pair_extras) {
+                reference_extra_candidates.reserve(candidate_evals.size());
+            }
+            auto pair_prefer = [&](const CandidateEval &lhs, const CandidateEval &rhs) {
+                const double lhs_reference_floor =
+                    stats.reference_error_weight +
+                    regularization_ * static_cast<double>(lhs.groups);
+                const double rhs_reference_floor =
+                    stats.reference_error_weight +
+                    regularization_ * static_cast<double>(rhs.groups);
+                const double lhs_gap = lhs.cheap_hard_ceiling - lhs_reference_floor;
+                const double rhs_gap = rhs.cheap_hard_ceiling - rhs_reference_floor;
+                if (lhs_gap < rhs_gap - kEpsUpdate) {
+                    return true;
+                }
+                if (rhs_gap < lhs_gap - kEpsUpdate) {
+                    return false;
+                }
+                if (lhs.cheap_hard_ceiling < rhs.cheap_hard_ceiling - kEpsUpdate) {
+                    return true;
+                }
+                if (rhs.cheap_hard_ceiling < lhs.cheap_hard_ceiling - kEpsUpdate) {
+                    return false;
+                }
+                if (lhs.cheap_score < rhs.cheap_score - kEpsUpdate) {
+                    return true;
+                }
+                if (rhs.cheap_score < lhs.cheap_score - kEpsUpdate) {
+                    return false;
+                }
+                if (lhs.groups != rhs.groups) {
+                    return lhs.groups < rhs.groups;
+                }
+                return lhs.feature < rhs.feature;
+            };
             for (const CandidateEval &eval : candidate_evals) {
                 if (eval.cheap_score <= pair_prune_cutoff) {
                     surviving_candidate_evals.push_back(eval);
                     ++feature_survivor_pair_count[(size_t)eval.feature];
                 } else {
                     ++pruned_pair_count;
+                    if (use_reference_pair_extras) {
+                        const double reference_floor =
+                            stats.reference_error_weight +
+                            regularization_ * static_cast<double>(eval.groups);
+                        if (reference_floor + kEpsUpdate < search_upper_bound) {
+                            reference_extra_candidates.push_back(eval);
+                        }
+                    }
+                }
+            }
+            if (use_reference_pair_extras && !reference_extra_candidates.empty()) {
+                const size_t extra_budget =
+                    std::min(reference_extra_candidates.size(), static_cast<size_t>(8));
+                if (extra_budget < reference_extra_candidates.size()) {
+                    auto prefix_end =
+                        reference_extra_candidates.begin() + static_cast<std::ptrdiff_t>(extra_budget);
+                    std::nth_element(
+                        reference_extra_candidates.begin(),
+                        prefix_end,
+                        reference_extra_candidates.end(),
+                        pair_prefer);
+                    reference_extra_candidates.resize(extra_budget);
+                }
+                std::sort(
+                    reference_extra_candidates.begin(),
+                    reference_extra_candidates.end(),
+                    pair_prefer);
+                for (const CandidateEval &eval : reference_extra_candidates) {
+                    surviving_candidate_evals.push_back(eval);
+                    ++feature_survivor_pair_count[(size_t)eval.feature];
                 }
             }
         }
@@ -671,7 +759,7 @@
                 "return_no_pair_survivor",
                 preserved_feature_count,
                 static_cast<unsigned long long>(candidate_evals.size()),
-                best_coarse_proxy);
+                search_upper_bound);
         }
 
         std::vector<NomineeEval> nominee_evals = exact_mode
@@ -716,7 +804,6 @@
                 std::ceil(std::sqrt(static_cast<double>(candidate_count))));
             return std::max<size_t>(1U, std::min(candidate_count, budget));
         };
-        double search_upper_bound = leaf_objective;
         for (const NomineeEval &eval : nominee_evals) {
             if (eval.candidate.hard_loss_mode) {
                 search_upper_bound = std::min(search_upper_bound, nominee_hard_ceiling(eval));
