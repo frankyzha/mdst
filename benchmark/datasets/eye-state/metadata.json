@@ -1,0 +1,35 @@
+{
+  "csv_path": "/home/users/yz1075/msdt/benchmark/datasets/eye-state/raw/eye-state_data_matrix.csv",
+  "feature_columns": [
+    "V1",
+    "V2",
+    "V3",
+    "V4",
+    "V5",
+    "V6",
+    "V7",
+    "V8",
+    "V9",
+    "V10",
+    "V11",
+    "V12",
+    "V13",
+    "V14"
+  ],
+  "n_columns": 15,
+  "n_rows": 14980,
+  "schema_version": 2,
+  "spec": {
+    "description": "EEG eye state classification.",
+    "local_path": null,
+    "name": "eye-state",
+    "openml_id": 1471,
+    "source": "openml",
+    "target_name": "Class",
+    "task": "classification",
+    "uci_id": null
+  },
+  "target_columns": [
+    "Class"
+  ]
+}

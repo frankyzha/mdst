@@ -1,0 +1,35 @@
+{
+  "csv_path": "/home/users/yz1075/msdt/benchmark/datasets/adult/raw/adult_data_matrix.csv",
+  "feature_columns": [
+    "age",
+    "workclass",
+    "fnlwgt",
+    "education",
+    "education-num",
+    "marital-status",
+    "occupation",
+    "relationship",
+    "race",
+    "sex",
+    "capital-gain",
+    "capital-loss",
+    "hours-per-week",
+    "native-country"
+  ],
+  "n_columns": 15,
+  "n_rows": 48842,
+  "schema_version": 2,
+  "spec": {
+    "description": "Adult income classification.",
+    "local_path": null,
+    "name": "adult",
+    "openml_id": null,
+    "source": "uci",
+    "target_name": "income",
+    "task": "classification",
+    "uci_id": 2
+  },
+  "target_columns": [
+    "income"
+  ]
+}

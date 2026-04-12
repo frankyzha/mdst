@@ -1,6 +1,6 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
-*.py[cod]
+*.py[codz]
 *$py.class
 
 # C extensions
@@ -138,15 +138,11 @@ celerybeat.pid
 .env
 .envrc
 .venv
-.analysis-venv/
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
-
-# Local workspace scratch directories
-"$TMPDIR"/
 
 # Spyder project settings
 .spyderproject
@@ -190,51 +186,7 @@ cython_debug/
 #  that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
 #  and can be added to the global gitignore or merged into this file. However, if you prefer, 
 #  you could uncomment the following to ignore the entire vscode folder
-.vscode/
-
-# Local Codex/workspace artifacts and duplicate checkouts
-.codex
-SPLIT-ICML/split-b948995/
-SPLIT-ICML/split-benchmark-baseline/
-benchmark/datasets/coupon/run.log
-"$TMPDIR"/
-
-# Local CMake/Python build trees
-algorithm/msplit/build*/
-!algorithm/msplit/build-nonlinear-py
-algorithm/msplit/debug-build/
-algorithm/msplit/manual-build/
-algorithm/msplit/pyproject-build/
-algorithm/msplit/.pytest_cache/
-algorithm/msplit/scripts/__pycache__/
-algorithm/msplit/tests/__pycache__/
-algorithm/msplit/results/
-algorithm/shapecart/src/__pycache__/
-.openml_cache/
-.openml_cache_root/
-tmp_*.log
-datasets_electricity_nohup.log
-
-# Benchmark caches and generated artifacts
-benchmark/cache/
-benchmark/artifacts/*
-!benchmark/artifacts/datasets/
-benchmark/artifacts/datasets/*
-!benchmark/artifacts/datasets/coupon/
-!benchmark/artifacts/datasets/electricity/
-benchmark/artifacts/datasets/coupon/*
-!benchmark/artifacts/datasets/coupon/plots/
-!benchmark/artifacts/datasets/coupon/summary_by_depth.csv
-benchmark/artifacts/datasets/coupon/plots/*
-!benchmark/artifacts/datasets/coupon/plots/accuracy_vs_depth_test.png
-!benchmark/artifacts/datasets/coupon/plots/accuracy_vs_depth_val.png
-benchmark/artifacts/datasets/electricity/*
-!benchmark/artifacts/datasets/electricity/plots/
-!benchmark/artifacts/datasets/electricity/summary_by_depth.csv
-!benchmark/artifacts/datasets/electricity/last_error.json
-benchmark/artifacts/datasets/electricity/plots/*
-!benchmark/artifacts/datasets/electricity/plots/accuracy_vs_depth_test.png
-!benchmark/artifacts/datasets/electricity/plots/accuracy_vs_depth_val.png
+# .vscode/
 
 # Ruff stuff:
 .ruff_cache/
@@ -254,27 +206,16 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# macOS
-.DS_Store
+scart_env/
 
-# Build artifacts
-*.o
-*.obj
-*.dylib
-*.a
-*.la
-*.lo
-cmake-build-*/
-CMakeFiles/
-CMakeCache.txt
-compile_commands.json
+models/
+data/
 
-# Local dependency/build outputs
-localdeps/
+src/__pycache__/
+__pycache__/
 
-# Experiment outputs and caches
-results/
+temp_store/
 
-# Logs and temp files
-*.tmp
-tmp/
+split/pyproject-build/
+results/classification/processed/
+results/regression/processed/
