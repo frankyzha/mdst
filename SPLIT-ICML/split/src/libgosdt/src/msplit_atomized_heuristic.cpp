@@ -944,18 +944,6 @@
                 above_lookahead_hardloss_bucket_after_prune_total_ += hardloss_after;
             }
             telemetry.atomized_coarse_pruned_candidates += reference_pruned;
-        } else if (above_lookahead) {
-            long long impurity_after = 0;
-            long long hardloss_after = 0;
-            for (const NomineeEval &eval : nominee_evals) {
-                if (eval.candidate.hard_loss_mode) {
-                    ++hardloss_after;
-                } else {
-                    ++impurity_after;
-                }
-            }
-            above_lookahead_impurity_bucket_after_prune_total_ += impurity_after;
-            above_lookahead_hardloss_bucket_after_prune_total_ += hardloss_after;
         }
 
         if (nominee_evals.empty()) {
@@ -1106,7 +1094,9 @@
         size_t best_exact_idx = std::numeric_limits<size_t>::max();
         std::vector<std::shared_ptr<Node>> child_nodes;
 
-        auto materialize_nominee = [&](NomineeEval &eval, const PreparedFeatureAtomized &prepared) -> bool {
+        auto materialize_nominee = [&](NomineeEval &eval,
+                                      const PreparedFeatureAtomized &prepared,
+                                      double incumbent_limit) -> bool {
             if (eval.materialized) {
                 return !eval.child_indices.empty();
             }
@@ -1157,6 +1147,16 @@
                 eval.child_indices.push_back(std::move(subset_sorted));
                 eval.child_stats.push_back(std::move(child_stats));
                 eval.group_spans.push_back(atom_positions_to_spans(prepared.bins, group_positions));
+                if (lower_bound + kEpsUpdate >= incumbent_limit) {
+                    eval.lower_bound = lower_bound;
+                    eval.upper_bound = upper_bound;
+                    eval.child_indices.clear();
+                    eval.child_stats.clear();
+                    eval.group_spans.clear();
+                    eval.materialized = true;
+                    std::vector<int>().swap(eval.candidate.assignment);
+                    return false;
+                }
             }
             eval.lower_bound = lower_bound;
             eval.upper_bound = upper_bound;
@@ -1178,7 +1178,7 @@
                 ++exact_evaluated_total;
                 return exact_results[idx];
             }
-            if (!materialize_nominee(eval, prepared)) {
+            if (!materialize_nominee(eval, prepared, best_exact_objective)) {
                 finalized[idx] = 1U;
                 exact_results[idx] = std::move(result);
                 ++exact_evaluated_total;
@@ -1215,6 +1215,10 @@
                     GreedyResult child = solve_subproblem(std::move(eval.child_indices[group_idx]), depth_remaining - 1);
                     objective += child.objective;
                     child_nodes.push_back(child.tree);
+                }
+                if (objective + kEpsUpdate >= best_exact_objective) {
+                    build_ok = false;
+                    break;
                 }
             }
 
