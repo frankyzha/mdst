@@ -186,44 +186,6 @@
         double upper_bound = kInfinity;
     };
 
-    static std::string canonical_assignment_signature(
-        int feature,
-        int groups,
-        std::vector<int> &assignment
-    ) {
-        if (!assignment.empty()) {
-            std::vector<int> label_map((size_t)groups, -1);
-            int next_label = 0;
-            for (int &label : assignment) {
-                if (label < 0 || label >= groups) {
-                    label = -1;
-                    continue;
-                }
-                int &mapped = label_map[(size_t)label];
-                if (mapped < 0) {
-                    mapped = next_label++;
-                }
-                label = mapped;
-            }
-        }
-        std::string key;
-        key.reserve(sizeof(uint64_t) * (assignment.size() + 4U));
-        auto append_varint = [&](uint64_t value) {
-            while (value >= 0x80U) {
-                key.push_back(static_cast<char>((value & 0x7FU) | 0x80U));
-                value >>= 7U;
-            }
-            key.push_back(static_cast<char>(value));
-        };
-        append_varint((uint64_t)feature);
-        append_varint((uint64_t)groups);
-        append_varint((uint64_t)assignment.size());
-        for (int value : assignment) {
-            append_varint((uint64_t)std::max(0, value));
-        }
-        return key;
-    }
-
     static int compare_nominee_eval_core(const NomineeEval &lhs, const NomineeEval &rhs) {
         const double lhs_impurity =
             lhs.candidate.score.hard_impurity + lhs.candidate.score.soft_impurity;
@@ -358,8 +320,6 @@
         nominees.reserve(candidate_evals.size() * 3U);
 
         auto &telemetry = const_cast<Solver *>(this)->atomized_telemetry();
-        std::unordered_set<std::string> nominee_signature_seen;
-        nominee_signature_seen.reserve(candidate_evals.size() * 3U);
 
         for (const CandidateEval &eval : candidate_evals) {
             const PreparedFeatureAtomized &prepared = prepared_by_feature[(size_t)eval.feature];
@@ -397,14 +357,6 @@
                         nominee_mode)
                     : eval.cheap_score;
                 nominee.cheap_lower_bound = eval.cheap_lower_bound;
-                const std::string signature_key = canonical_assignment_signature(
-                    nominee.feature,
-                    nominee.groups,
-                    candidate.assignment);
-                if (nominee_signature_seen.find(signature_key) != nominee_signature_seen.end()) {
-                    continue;
-                }
-                nominee_signature_seen.emplace(std::move(signature_key));
                 nominee.candidate = std::move(candidate);
                 nominees.push_back(std::move(nominee));
             }
@@ -420,8 +372,6 @@
         double mu_node
     ) const {
         auto &telemetry = const_cast<Solver *>(this)->atomized_telemetry();
-        std::unordered_set<std::string> nominee_signature_seen;
-        nominee_signature_seen.reserve(candidate_evals.size() * 2U);
 
         bool has_best = false;
         NomineeEval best_nominee;
@@ -446,14 +396,6 @@
                 if (!candidate.feasible) {
                     continue;
                 }
-                const std::string signature_key = canonical_assignment_signature(
-                    eval.feature,
-                    eval.groups,
-                    candidate.assignment);
-                if (nominee_signature_seen.find(signature_key) != nominee_signature_seen.end()) {
-                    continue;
-                }
-                nominee_signature_seen.emplace(signature_key);
                 ++unique_nominee_count;
 
                 NomineeEval nominee;
