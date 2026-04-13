@@ -11,10 +11,11 @@
 
 class Dataset {
    public:
-    /// TODO(Ilias: There's no actual reason to take input as a single Matrix anymore. The decision to so in the past made sense, but now it just makes it impossible to find out how many targets we have from just the input matrix.)
-    /// Constructs a new dataset (without a reference matrix)
+    /// Constructs a new dataset (without a reference matrix).
     ///
-    /// TODO: What do we need? Definitely neeed the config object. An X Matrix<bool>. A y Matrix<bool>. A costs matrix? Maybe not, we can probably just generate it in C++, it's really not all that hard. We do need the feature_map, but is this the right way to communicate it?? Also we seem to only really want the binarized -> original feature, so there's a simpler mapping for our purposes (std::vector<size_t>).
+    /// `feature_map` is provided as original feature -> binarized feature ids to
+    /// preserve the Python-facing API, but internally we keep a compact reverse
+    /// lookup for binarized -> original feature queries.
     Dataset(const Configuration &config, const Matrix<bool> &input, const Matrix<float> &costs,
             const std::vector<std::set<size_t>> &feature_map);
     /// Constructs a new dataset (with a reference matrix)
@@ -66,6 +67,7 @@ class Dataset {
 
    private:
     /// Ctor helpers.
+    void initialize_feature_map(const std::vector<std::set<size_t>> &feature_map);
     void construct_bitmasks(const Matrix<bool> &input);
     void construct_cost_matrices(const Matrix<float> &cost_matrix);
     void construct_majority_bitmask();
@@ -100,8 +102,11 @@ class Dataset {
     // Configuration flag, `reference_LB` is set).
     std::optional<std::vector<Bitmask>> m_reference_targets;
 
-    // Maps original feature index -> set of binarized feature indices
-    std::vector<std::set<size_t>> m_feature_map;
+    // Stable original feature -> binarized feature groups for persistence.
+    std::vector<std::vector<size_t>> m_feature_groups;
+
+    // Direct binarized feature -> original feature lookup used at runtime.
+    std::vector<size_t> m_binarized_to_original_feature;
 };
 
 #endif

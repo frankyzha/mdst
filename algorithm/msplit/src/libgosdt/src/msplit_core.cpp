@@ -240,11 +240,27 @@ struct GreedyCacheEntry {
 class Solver {
    public:
     struct CanonicalSignatureBlock {
-        std::string code_key;
+        const int *row_key = nullptr;
         int row_count = 0;
         double pos_weight = 0.0;
         double neg_weight = 0.0;
         std::vector<double> class_weight;
+    };
+
+    struct RowPatternPtrHash {
+        const Solver *solver = nullptr;
+
+        size_t operator()(const int *row_key) const noexcept {
+            return solver->hash_row_pattern(row_key);
+        }
+    };
+
+    struct RowPatternPtrEq {
+        const Solver *solver = nullptr;
+
+        bool operator()(const int *lhs, const int *rhs) const noexcept {
+            return solver->row_patterns_equal(lhs, rhs);
+        }
     };
 
     struct CanonicalSignatureSummary {
@@ -1021,6 +1037,28 @@ class Solver {
 
     int x(int row, int feature) const { return x_flat_[(size_t)row * (size_t)n_features_ + (size_t)feature]; }
 
+    const int *row_ptr(int row) const {
+        return x_flat_.data() + (static_cast<size_t>(row) * static_cast<size_t>(n_features_));
+    }
+
+    size_t hash_row_pattern(const int *row_key) const noexcept {
+        size_t seed = 1469598103934665603ULL;
+        for (int feature = 0; feature < n_features_; ++feature) {
+            const size_t value_hash = std::hash<int>{}(row_key[(size_t)feature]);
+            seed ^= value_hash + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U);
+        }
+        return seed;
+    }
+
+    bool row_patterns_equal(const int *lhs, const int *rhs) const noexcept {
+        return lhs == rhs ||
+               std::memcmp(lhs, rhs, static_cast<size_t>(n_features_) * sizeof(int)) == 0;
+    }
+
+    bool row_pattern_less(const int *lhs, const int *rhs) const noexcept {
+        return std::lexicographical_compare(lhs, lhs + n_features_, rhs, rhs + n_features_);
+    }
+
     static size_t estimate_cache_entry_bytes(const std::string &key, const GreedyResult &result) {
         return sizeof(GreedyCacheEntry) + key.capacity() + sizeof(result);
     }
@@ -1505,13 +1543,6 @@ class Solver {
         std::sort(dst.begin(), dst.end());
     }
 
-    std::string encode_signature_code(int row) const {
-        std::string code;
-        code.resize((size_t)n_features_ * sizeof(int));
-        std::memcpy(code.data(), &x_flat_[(size_t)row * (size_t)n_features_], (size_t)n_features_ * sizeof(int));
-        return code;
-    }
-
     std::string canonical_signature_key(const std::vector<int> &indices) const {
         std::string key;
         key.reserve(sizeof(uint64_t) + indices.size() * sizeof(uint64_t));
@@ -1541,14 +1572,17 @@ class Solver {
 
         CanonicalSignatureSummary summary;
         summary.block_count = 0U;
-        std::unordered_map<std::string, CanonicalSignatureBlock> blocks_by_code;
-        blocks_by_code.reserve(indices.size());
+        std::unordered_map<const int *, CanonicalSignatureBlock, RowPatternPtrHash, RowPatternPtrEq> blocks_by_pattern(
+            0U,
+            RowPatternPtrHash{this},
+            RowPatternPtrEq{this});
+        blocks_by_pattern.reserve(indices.size());
 
         for (int row : indices) {
-            const std::string code = encode_signature_code(row);
-            CanonicalSignatureBlock &block = blocks_by_code[code];
-            if (block.code_key.empty()) {
-                block.code_key = code;
+            const int *row_key = row_ptr(row);
+            CanonicalSignatureBlock &block = blocks_by_pattern[row_key];
+            if (block.row_key == nullptr) {
+                block.row_key = row_key;
                 if (!binary_mode_) {
                     block.class_weight.assign((size_t)n_classes_, 0.0);
                 }
@@ -1567,15 +1601,15 @@ class Solver {
         }
 
         std::vector<CanonicalSignatureBlock> blocks;
-        blocks.reserve(blocks_by_code.size());
-        for (auto &entry : blocks_by_code) {
+        blocks.reserve(blocks_by_pattern.size());
+        for (auto &entry : blocks_by_pattern) {
             blocks.push_back(std::move(entry.second));
         }
         std::sort(
             blocks.begin(),
             blocks.end(),
-            [](const CanonicalSignatureBlock &lhs, const CanonicalSignatureBlock &rhs) {
-                return lhs.code_key < rhs.code_key;
+            [&](const CanonicalSignatureBlock &lhs, const CanonicalSignatureBlock &rhs) {
+                return row_pattern_less(lhs.row_key, rhs.row_key);
             });
 
         summary.signature_bound = regularization_;

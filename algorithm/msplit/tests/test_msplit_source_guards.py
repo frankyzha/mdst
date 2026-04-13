@@ -19,6 +19,16 @@ def _current_solver_source_text() -> dict[str, str]:
     }
 
 
+def _dataset_source_text() -> dict[str, str]:
+    root = Path(__file__).resolve().parents[1] / "src" / "libgosdt"
+    header = root / "include" / "dataset.hpp"
+    source = root / "src" / "dataset.cpp"
+    return {
+        "header": header.read_text(encoding="utf-8"),
+        "source": source.read_text(encoding="utf-8"),
+    }
+
+
 def test_current_sources_have_no_force_legacy_or_atom_descent_symbols():
     texts = _current_solver_source_text()
     text = "\n".join(texts.values())
@@ -93,3 +103,22 @@ def test_current_core_default_lookahead_is_dynamic_half_depth():
     text = _current_solver_source_text()["core"]
     assert "std::max(1, (full_depth_budget_ + 1) / 2)" in text
     assert "effective_lookahead_depth_ =" in text
+
+
+def test_dataset_uses_compact_reverse_feature_lookup():
+    texts = _dataset_source_text()
+    header = texts["header"]
+    source = texts["source"]
+
+    assert "m_binarized_to_original_feature" in header
+    assert "std::vector<std::set<size_t>> m_feature_map" not in header
+    assert "m_binarized_to_original_feature[binarized_feature_index]" in source
+    assert "m_feature_map[i].find(binarized_feature_index)" not in source
+
+
+def test_signature_summary_groups_rows_without_string_row_copies():
+    core = _current_solver_source_text()["core"]
+
+    assert "std::unordered_map<const int *, CanonicalSignatureBlock" in core
+    assert "row_pattern_less(lhs.row_key, rhs.row_key)" in core
+    assert "encode_signature_code(" not in core

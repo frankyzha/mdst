@@ -10,8 +10,7 @@ Dataset::Dataset(const Configuration &config, const Matrix<bool> &input_data, co
     : m_config(config),
       m_number_rows(input_data.n_rows()),
       m_number_targets(cost_matrix.n_rows()),
-      m_number_features(input_data.n_columns() - cost_matrix.n_rows()),
-      m_feature_map(feature_map) {
+      m_number_features(input_data.n_columns() - cost_matrix.n_rows()) {
     if (input_data.n_columns() == cost_matrix.n_rows() || input_data.n_columns() == 0) {
         throw std::invalid_argument(
             "During dataset processing, it was found that the provided dataset has no feature columns.");
@@ -27,6 +26,7 @@ Dataset::Dataset(const Configuration &config, const Matrix<bool> &input_data, co
         throw std::invalid_argument("During dataset processing, it was found that the provided dataset has no rows.");
     }
 
+    initialize_feature_map(feature_map);
     construct_bitmasks(input_data);
     construct_cost_matrices(cost_matrix);
     construct_majority_bitmask();
@@ -149,14 +149,45 @@ float Dataset::distance(const Bitmask &capture_set, size_t i, size_t j, Bitmask 
 }
 
 size_t Dataset::original_feature(size_t binarized_feature_index) const {
-    for (size_t i = 0; i < m_feature_map.size(); i++) {
-        if (m_feature_map[i].find(binarized_feature_index) != m_feature_map[i].end()) {
-            return i;
+    if (binarized_feature_index < m_binarized_to_original_feature.size()) {
+        const size_t original = m_binarized_to_original_feature[binarized_feature_index];
+        if (original != std::numeric_limits<size_t>::max()) {
+            return original;
         }
     }
     gosdt_error("The binarized feature ", binarized_feature_index,
                 " does not have an original feature index in the provided "
                 "feature map.");
+}
+
+void Dataset::initialize_feature_map(const std::vector<std::set<size_t>> &feature_map) {
+    m_feature_groups.clear();
+    m_feature_groups.reserve(feature_map.size());
+    m_binarized_to_original_feature.assign(m_number_features, std::numeric_limits<size_t>::max());
+
+    for (size_t original_feature = 0; original_feature < feature_map.size(); ++original_feature) {
+        std::vector<size_t> group;
+        group.reserve(feature_map[original_feature].size());
+        for (size_t binarized_feature : feature_map[original_feature]) {
+            if (binarized_feature >= m_number_features) {
+                throw std::invalid_argument("During dataset processing, feature_map contains an out-of-range feature.");
+            }
+            if (m_binarized_to_original_feature[binarized_feature] != std::numeric_limits<size_t>::max()) {
+                throw std::invalid_argument(
+                    "During dataset processing, feature_map assigns the same binarized feature more than once.");
+            }
+            m_binarized_to_original_feature[binarized_feature] = original_feature;
+            group.push_back(binarized_feature);
+        }
+        m_feature_groups.push_back(std::move(group));
+    }
+
+    for (size_t binarized_feature = 0; binarized_feature < m_binarized_to_original_feature.size(); ++binarized_feature) {
+        if (m_binarized_to_original_feature[binarized_feature] == std::numeric_limits<size_t>::max()) {
+            throw std::invalid_argument(
+                "During dataset processing, feature_map does not cover every binarized feature.");
+        }
+    }
 }
 
 void Dataset::construct_bitmasks(const Matrix<bool> &input_data) {
@@ -306,8 +337,8 @@ void Dataset::save(const std::string &filename) const {
     } else {
         file << false << std::endl;
     }
-    for (const auto &feature_set : m_feature_map) {
-        for (const auto &feature : feature_set) {
+    for (const auto &feature_group : m_feature_groups) {
+        for (const auto &feature : feature_group) {
             file << feature << " ";
         }
         file << std::endl;

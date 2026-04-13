@@ -1,53 +1,52 @@
 # msdt
 
-This repository contains the current MSPLIT research codebase centered on two
-tree-learning variants:
+This repository is the active MSPLIT research workspace. The main solver lives
+in the local `split` package under `algorithm/msplit/`, with benchmark code and
+datasets organized under `benchmark/`.
 
-- `linear`: the lightweight linear selector in
-  `algorithm/msplit/src/libgosdt/src/msplit_linear.cpp`
-- `nonlinear`: the default reference-guided atomized selector in
-  `algorithm/msplit/src/libgosdt/src/msplit_nonlinear.cpp`
+## Solver Layout
+
+- `algorithm/msplit/src/libgosdt/src/msplit_nonlinear.cpp`
+  Active nonlinear selector entrypoint.
+- `algorithm/msplit/src/libgosdt/src/msplit_atomized.cpp`
+  Default reference-guided atomized selector used by the active nonlinear path.
+- `algorithm/msplit/src/libgosdt/src/msplit_linear.cpp`
+  Alternate linear selector kept in-tree for comparison and development.
+- `algorithm/msplit/src/split/MSPLIT.py`
+  Python estimator wrapper for the native MSPLIT solver.
+- `split/__init__.py`
+  Repository-local import shim so `import split` resolves to the in-repo package.
 
 ## Repository Layout
 
 - `algorithm/msplit/`
-  Active local `split` package, C++ solver, Python bindings, and tests.
+  Native solver, pybind module, Python package, and tests.
 - `algorithm/shapecart/`
-  ShapeCART source tree used by the benchmark scripts.
+  ShapeCART source used by benchmark comparisons.
 - `benchmark/datasets/`
-  Dataset bundles and benchmark metadata.
+  Versioned benchmark datasets and metadata.
 - `benchmark/cache/`
-  Cached LightGBM binning artifacts used by the MSPLIT benchmark workflow.
+  Cached preprocessing artifacts for repeated benchmark runs.
 - `benchmark/artifacts/`
-  Benchmark outputs such as run directories, plots, tree visualizations, and summaries.
+  Generated outputs such as summaries, plots, and tree visualizations.
 - `benchmark/scripts/`
-  Runnable experiment entrypoints:
-  - `benchmark_teacher_guided_atomcolor_cached.py`
-  - `run_cached_depth_benchmarks_msplit_linear_nonlinear_shapecart.py`
-  - `visualize_multisplit_tree_n.py`
-  - `visualize_multisplit_tree_color.py`
-  - `visualize_multisplit_tree.py` (compatibility wrapper)
-  - `analyze_coupon_linear_nonlinear_shapecart.py`
-  - `run_msplit_cache_worker.py`
-  - `tune_msplit_cached_optuna.py`
-- `benchmark/scripts/dataset.py`, `benchmark/scripts/experiment_utils.py`,
-  `benchmark/scripts/lightgbm_binning.py`, `benchmark/scripts/tree_artifact_utils.py`,
-  `benchmark/scripts/cache_utils.py`, `benchmark/scripts/benchmark_paths.py`
-  Shared Python helpers used by the benchmark scripts.
+  Main experiment entrypoints and shared helpers.
 
-## What Was Removed
+## Build The Local Package
 
-The repository has been pruned to remove:
+The native extension is built from `algorithm/msplit/` with `scikit-build-core`
+and CMake. A local editable install is the simplest setup:
 
-- historical cluster submission scripts and run logs
-- retired one-off diagnostics and benchmark experiments
-- accidental tracked build trees and temporary artifacts
-- duplicated local scratch datasets and stale output files
+```bash
+python3 -m pip install -e algorithm/msplit
+```
 
-## Quick Start
+The build expects the native dependencies declared in
+`algorithm/msplit/CMakeLists.txt`, notably TBB, GMP, and GLPK.
 
-Build the local `split` extension, then run one of the benchmark scripts under
-`benchmark/scripts/`. For example:
+## Common Workflows
+
+Run the benchmark driver:
 
 ```bash
 python3 benchmark/scripts/benchmark_teacher_guided_atomcolor_cached.py \
@@ -55,3 +54,23 @@ python3 benchmark/scripts/benchmark_teacher_guided_atomcolor_cached.py \
   --depth 6 \
   --lookahead-depth 3
 ```
+
+Run the comparison benchmark sweep:
+
+```bash
+python3 benchmark/scripts/run_cached_depth_benchmarks_msplit_linear_nonlinear_shapecart.py
+```
+
+Run the MSPLIT tests:
+
+```bash
+python3 -m pytest algorithm/msplit/tests
+```
+
+## Notes
+
+- `benchmark/scripts/visualize_multisplit_tree.py` is a compatibility wrapper.
+  The maintained visualization entrypoints are
+  `visualize_multisplit_tree_n.py` and `visualize_multisplit_tree_color.py`.
+- Historical scratch outputs and accidental build artifacts have been pruned so
+  the repository reflects the active benchmark and solver layout.
