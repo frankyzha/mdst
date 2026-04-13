@@ -160,8 +160,6 @@ struct FitResult {
     std::vector<long long> atomized_feature_q_effective_histogram;
     std::vector<long long> greedy_feature_preserved_histogram;
     std::vector<long long> greedy_candidate_count_histogram;
-    std::vector<long long> per_node_prepared_features;
-    std::vector<long long> per_node_candidate_count;
     std::vector<double> per_node_total_weight;
     std::vector<double> per_node_mu_node;
     std::vector<std::vector<double>> per_node_candidate_upper_bounds;

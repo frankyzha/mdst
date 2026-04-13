@@ -221,10 +221,12 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
     merges them into one shortlist, prunes them with a LightGBM-guided reference
     floor, and exactifies only a small prefix. Near the root it exactifies a
     broader shortlist; below the lookahead horizon it switches to a much cheaper
-    greedy completion. When ``exactify_top_k`` is omitted, the shortlist budget
+    greedy completion. The native reference-guided path requires
+    ``teacher_logit``. When ``exactify_top_k`` is omitted, the shortlist budget
     defaults to a ``sqrt(N)`` rule on the active candidate set. When
-    ``exactify_top_k=K`` is specified, the solver exactifies at most ``K``
-    candidates above the lookahead horizon.
+    ``exactify_top_k=K`` is specified, the solver exactifies a shortlist prefix
+    capped by ``K`` but still preserves the strongest impurity and hard-loss
+    anchors, so the realized prefix can exceed ``K`` when those anchors differ.
     """
 
     def __init__(
@@ -301,13 +303,6 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
         self._assign_scalar_metrics(cpp_result, _NATIVE_FLOAT_METRIC_KEYS, float, default_value=0.0)
         self._assign_scalar_metrics(cpp_result, _NATIVE_LIST_METRIC_KEYS, list, default_value=[])
 
-        self.per_node_prepared_features_ = list(
-            cpp_result.get("per_node_prepared_features", self.greedy_feature_preserved_histogram_)
-        )
-        self.per_node_candidate_count_ = list(
-            cpp_result.get("per_node_candidate_count", self.greedy_candidate_count_histogram_)
-        )
-
     def _reset_solver_diagnostics(self, *, class_count: int) -> None:
         self.native_n_classes_ = int(class_count)
         self.native_teacher_class_count_ = 0
@@ -319,9 +314,6 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
             setattr(self, f"{key}_", 0.0)
         for key in _NATIVE_LIST_METRIC_KEYS:
             setattr(self, f"{key}_", [])
-
-        self.per_node_prepared_features_ = []
-        self.per_node_candidate_count_ = []
 
     def fit(
         self,
@@ -367,6 +359,10 @@ class MSPLIT(ClassifierMixin, BaseEstimator):
 
         self.effective_lookahead_depth_ = self._resolve_lookahead_depth()
         if self.use_cpp_solver and _cpp_msplit_fit is not None:
+            if teacher_logit is None:
+                raise ValueError(
+                    "MSPLIT C++ solver requires teacher_logit for the reference-guided atomized path."
+                )
             restore_cache_env = False
             previous_cache_env = os.environ.get("MSPLIT_GREEDY_CACHE_MAX_DEPTH")
             if previous_cache_env is None and self.full_depth_budget <= 2:

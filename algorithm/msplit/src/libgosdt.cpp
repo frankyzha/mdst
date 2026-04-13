@@ -446,8 +446,6 @@ PYBIND11_MODULE(_libgosdt, m) {
             out["atomized_feature_q_effective_histogram"] = solved.atomized_feature_q_effective_histogram;
             out["greedy_feature_preserved_histogram"] = solved.greedy_feature_preserved_histogram;
             out["greedy_candidate_count_histogram"] = solved.greedy_candidate_count_histogram;
-            out["per_node_prepared_features"] = solved.per_node_prepared_features;
-            out["per_node_candidate_count"] = solved.per_node_candidate_count;
             out["per_node_total_weight"] = solved.per_node_total_weight;
             out["per_node_mu_node"] = solved.per_node_mu_node;
             out["per_node_candidate_upper_bounds"] = solved.per_node_candidate_upper_bounds;

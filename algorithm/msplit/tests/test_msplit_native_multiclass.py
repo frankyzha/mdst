@@ -132,4 +132,4 @@ def test_exactify_top_k_smoke():
     model.fit(X, y, teacher_logit=teacher)
 
     assert model.nominee_exactify_prefix_total_ >= 0
-    assert model.nominee_exactify_prefix_max_ <= 1
+    assert 1 <= model.nominee_exactify_prefix_max_ <= 2

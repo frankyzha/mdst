@@ -300,7 +300,6 @@ def run_cached_msplit(
         "family2_soft_impurity_sum": float(cpp_result.get("family2_soft_impurity_sum", 0.0)),
         "family_soft_impurity_delta_sum": float(cpp_result.get("family_soft_impurity_delta_sum", 0.0)),
         "family2_joint_impurity_wins": int(cpp_result.get("family2_joint_impurity_wins", 0)),
-        "family1_hard_loss_inversion_traces": cpp_result.get("family1_hard_loss_inversion_traces", []),
         "teacher_available": bool(cpp_result.get("teacher_available", False)),
         "n_classes": int(cpp_result.get("n_classes", 0)),
         "teacher_class_count": int(cpp_result.get("teacher_class_count", 0)),
@@ -316,9 +315,6 @@ def run_cached_msplit(
         ),
         "greedy_candidate_count_histogram": cpp_result.get(
             "greedy_candidate_count_histogram", []
-        ),
-        "per_node_candidate_count": cpp_result.get(
-            "per_node_candidate_count", []
         ),
         "per_node_total_weight": cpp_result.get("per_node_total_weight", []),
         "per_node_mu_node": cpp_result.get("per_node_mu_node", []),
@@ -372,22 +368,9 @@ def run_cached_msplit(
         "nominee_certificate_stop_depth_histogram": cpp_result.get(
             "nominee_certificate_stop_depth_histogram", []
         ),
-        "nominee_exactify_prefix_total": int(
-            cpp_result.get(
-                "nominee_exactify_prefix_total",
-                cpp_result.get("nominee_elbow_prefix_total", 0),
-            )
-        ),
-        "nominee_exactify_prefix_max": int(
-            cpp_result.get(
-                "nominee_exactify_prefix_max",
-                cpp_result.get("nominee_elbow_prefix_max", 0),
-            )
-        ),
-        "nominee_exactify_prefix_histogram": cpp_result.get(
-            "nominee_exactify_prefix_histogram",
-            cpp_result.get("nominee_elbow_prefix_histogram", []),
-        ),
+        "nominee_exactify_prefix_total": int(cpp_result.get("nominee_exactify_prefix_total", 0)),
+        "nominee_exactify_prefix_max": int(cpp_result.get("nominee_exactify_prefix_max", 0)),
+        "nominee_exactify_prefix_histogram": cpp_result.get("nominee_exactify_prefix_histogram", []),
         "profiling_lp_solve_calls": int(cpp_result.get("profiling_lp_solve_calls", 0)),
         "profiling_lp_solve_sec": float(cpp_result.get("profiling_lp_solve_sec", 0.0)),
         "profiling_pricing_calls": int(cpp_result.get("profiling_pricing_calls", 0)),

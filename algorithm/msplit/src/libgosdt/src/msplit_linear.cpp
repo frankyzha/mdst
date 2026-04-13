@@ -1789,14 +1789,26 @@
 
         auto make_state_key = [&](const std::vector<int> &rows, int depth) {
             std::string key;
-            key.reserve(sizeof(int64_t) + rows.size() * sizeof(int64_t));
-            auto append_i64 = [&](int64_t value) {
-                key.append(reinterpret_cast<const char *>(&value), sizeof(value));
+            key.reserve(sizeof(uint64_t) + rows.size() * 2U + sizeof(uint64_t));
+            auto append_varint = [&](uint64_t value) {
+                while (value >= 0x80U) {
+                    key.push_back(static_cast<char>((value & 0x7FU) | 0x80U));
+                    value >>= 7U;
+                }
+                key.push_back(static_cast<char>(value));
             };
-            append_i64((int64_t)depth);
-            append_i64((int64_t)rows.size());
+            auto append_signed_delta = [&](int value) {
+                const int64_t widened = static_cast<int64_t>(value);
+                const uint64_t zigzag =
+                    static_cast<uint64_t>((widened << 1) ^ (widened >> 63));
+                append_varint(zigzag);
+            };
+            append_signed_delta(depth);
+            append_varint(static_cast<uint64_t>(rows.size()));
+            int previous = 0;
             for (int row : rows) {
-                append_i64((int64_t)row);
+                append_signed_delta(row - previous);
+                previous = row;
             }
             return key;
         };

@@ -19,6 +19,7 @@ def test_native_wrapper_weighted_cpp_smoke():
     )
     y = np.array([0, 0, 1, 1, 0, 1, 0, 1], dtype=np.int32)
     w = np.array([1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float64)
+    teacher = np.array([-3.0, -2.0, 2.0, 3.0, -1.5, 1.5, -0.5, 0.5], dtype=np.float64)
 
     model = MSPLIT(
         full_depth_budget=4,
@@ -28,7 +29,7 @@ def test_native_wrapper_weighted_cpp_smoke():
         max_branching=4,
         use_cpp_solver=True,
     )
-    model.fit(X, y, sample_weight=w)
+    model.fit(X, y, sample_weight=w, teacher_logit=teacher)
 
     assert model.lower_bound_ <= model.upper_bound_ + 1e-9
     assert model.objective_ <= model.upper_bound_ + 1e-9
@@ -49,6 +50,7 @@ def test_native_wrapper_default_lookahead_is_half_depth():
         dtype=np.int32,
     )
     y = np.array([0, 0, 1, 1, 0, 1], dtype=np.int32)
+    teacher = np.array([-3.0, -2.0, 2.0, 3.0, -1.0, 1.0], dtype=np.float64)
 
     model = MSPLIT(
         full_depth_budget=5,
@@ -56,7 +58,7 @@ def test_native_wrapper_default_lookahead_is_half_depth():
         max_branching=4,
         use_cpp_solver=True,
     )
-    model.fit(X, y)
+    model.fit(X, y, teacher_logit=teacher)
 
     assert model.effective_lookahead_depth_ == 3
     assert model.lower_bound_ <= model.upper_bound_ + 1e-9
@@ -97,8 +99,29 @@ def test_native_wrapper_exactify_metrics_exposed():
 
     assert model.native_teacher_class_count_ == 1
     assert model.nominee_exactify_prefix_total_ >= 0
-    assert model.nominee_exactify_prefix_max_ <= 1
+    assert 1 <= model.nominee_exactify_prefix_max_ <= 2
     assert isinstance(model.nominee_exactify_prefix_histogram_, list)
+
+
+def test_native_wrapper_cpp_requires_teacher_guidance():
+    X = np.array([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=np.int32)
+    y = np.array([0, 0, 1, 1], dtype=np.int32)
+
+    model = MSPLIT(
+        full_depth_budget=3,
+        lookahead_depth_budget=2,
+        min_child_size=1,
+        min_split_size=2,
+        max_branching=3,
+        use_cpp_solver=True,
+    )
+
+    try:
+        model.fit(X, y)
+    except ValueError as exc:
+        assert "teacher_logit" in str(exc)
+    else:
+        raise AssertionError("Expected the native reference-guided solver to require teacher_logit.")
 
 
 def test_native_wrapper_binary_teacher_matrix_matches_margin_vector():

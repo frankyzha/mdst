@@ -595,6 +595,7 @@ class Solver {
         if (!sample_weight_raw_.empty() && (int)sample_weight_raw_.size() != n_rows_) {
             throw std::invalid_argument("MSPLIT sample_weight must have length n_rows when provided.");
         }
+        initialize_row_pattern_hashes();
         initialize_runtime_overrides();
         initialize_class_info();
         initialize_weights();
@@ -807,8 +808,6 @@ class Solver {
         out.atomized_feature_block_atom_count_histogram = atomized_feature_block_atom_count_histogram_;
         out.atomized_feature_q_effective_histogram = atomized_feature_q_effective_histogram_;
         out.greedy_feature_survivor_histogram = greedy_feature_survivor_histogram_;
-        out.per_node_prepared_features = greedy_feature_preserved_histogram_;
-        out.per_node_candidate_count = greedy_candidate_count_histogram_;
         out.per_node_total_weight = per_node_total_weight_;
         out.per_node_mu_node = per_node_mu_node_;
         out.per_node_candidate_upper_bounds = per_node_candidate_upper_bounds_;
@@ -839,6 +838,7 @@ class Solver {
     const std::vector<double> &teacher_boundary_gain_raw_;
     const std::vector<double> &teacher_boundary_cover_raw_;
     const std::vector<double> &teacher_boundary_value_jump_raw_;
+    std::vector<size_t> row_pattern_hash_;
     std::vector<double> sample_weight_;
     bool sample_weight_uniform_ = false;
     std::vector<double> teacher_prob_;
@@ -1041,13 +1041,25 @@ class Solver {
         return x_flat_.data() + (static_cast<size_t>(row) * static_cast<size_t>(n_features_));
     }
 
-    size_t hash_row_pattern(const int *row_key) const noexcept {
-        size_t seed = 1469598103934665603ULL;
-        for (int feature = 0; feature < n_features_; ++feature) {
-            const size_t value_hash = std::hash<int>{}(row_key[(size_t)feature]);
-            seed ^= value_hash + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U);
+    void initialize_row_pattern_hashes() {
+        row_pattern_hash_.assign(static_cast<size_t>(n_rows_), 0U);
+        for (int row = 0; row < n_rows_; ++row) {
+            const int *row_key = row_ptr(row);
+            size_t seed = 1469598103934665603ULL;
+            for (int feature = 0; feature < n_features_; ++feature) {
+                const size_t value_hash = std::hash<int>{}(row_key[(size_t)feature]);
+                seed ^= value_hash + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U);
+            }
+            row_pattern_hash_[(size_t)row] = seed;
         }
-        return seed;
+    }
+
+    size_t row_index_from_ptr(const int *row_key) const noexcept {
+        return static_cast<size_t>(row_key - x_flat_.data()) / static_cast<size_t>(n_features_);
+    }
+
+    size_t hash_row_pattern(const int *row_key) const noexcept {
+        return row_pattern_hash_[row_index_from_ptr(row_key)];
     }
 
     bool row_patterns_equal(const int *lhs, const int *rhs) const noexcept {
