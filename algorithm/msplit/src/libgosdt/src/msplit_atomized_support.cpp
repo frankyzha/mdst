@@ -812,6 +812,9 @@
         const AtomizedCandidate &impurity,
         const AtomizedCandidate &misclassification
     ) const {
+        if (!diagnostics_enabled()) {
+            return;
+        }
         auto &telemetry = const_cast<Solver *>(this)->atomized_telemetry();
         ++telemetry.family_compare_total;
         telemetry.family1_hard_loss_sum += impurity.score.hard_loss;
@@ -880,32 +883,41 @@
         std::vector<AtomizedCandidate> selected;
         selected.reserve(2);
         auto &telemetry = const_cast<Solver *>(this)->atomized_telemetry();
+        const bool diagnostics = diagnostics_enabled();
         if (!impurity.feasible && !misclassification.feasible) {
             return selected;
         }
         if (!impurity.feasible) {
             ++telemetry.atomized_coarse_pruned_candidates;
-            ++telemetry.debr_final_block_wins;
+            if (diagnostics) {
+                ++telemetry.debr_final_block_wins;
+            }
             selected.push_back(std::move(misclassification));
             return selected;
         }
         if (!misclassification.feasible) {
             ++telemetry.atomized_coarse_pruned_candidates;
-            ++telemetry.debr_final_geo_wins;
+            if (diagnostics) {
+                ++telemetry.debr_final_geo_wins;
+            }
             selected.push_back(std::move(impurity));
             return selected;
         }
 
         record_family_compare_stats(impurity, misclassification);
         if (atomized_assignment_equivalent(impurity, misclassification)) {
-            ++telemetry.family_compare_equivalent;
-            ++telemetry.family1_selected_by_equivalence;
-            ++telemetry.debr_final_geo_wins;
+            if (diagnostics) {
+                ++telemetry.family_compare_equivalent;
+                ++telemetry.family1_selected_by_equivalence;
+                ++telemetry.debr_final_geo_wins;
+            }
             ++telemetry.atomized_coarse_pruned_candidates;
             selected.push_back(std::move(impurity));
             return selected;
         }
-        ++telemetry.family_sent_both;
+        if (diagnostics) {
+            ++telemetry.family_sent_both;
+        }
         selected.push_back(std::move(impurity));
         selected.push_back(std::move(misclassification));
         return selected;
@@ -971,25 +983,44 @@
                 atom.teacher_class_weight.assign((size_t)n_classes_, 0.0);
             }
 
-            for (int idx : bins.members[atom_pos]) {
-                const double w = sample_weight_[(size_t)idx];
-                const int label = y_[(size_t)idx];
-                if (binary_mode_ && label == 1) {
-                    atom.pos_weight += w;
-                } else if (binary_mode_) {
-                    atom.neg_weight += w;
-                } else {
-                    atom.class_weight[(size_t)label] += w;
+            if (binary_mode_ && sample_weight_uniform_) {
+                double teacher_pos_sum = 0.0;
+                for (int idx : bins.members[atom_pos]) {
+                    const int label = y_[(size_t)idx];
+                    if (label == 1) {
+                        atom.pos_weight += 1.0;
+                    } else {
+                        atom.neg_weight += 1.0;
+                    }
+                    teacher_pos_sum += teacher_prob_[(size_t)idx];
                 }
-                if (binary_mode_) {
-                    const double teacher_prob = teacher_prob_[(size_t)idx];
-                    atom.teacher_pos_weight += w * teacher_prob;
-                    atom.teacher_neg_weight += w * (1.0 - teacher_prob);
-                } else {
-                    const size_t teacher_base = static_cast<size_t>(idx) * static_cast<size_t>(n_classes_);
-                    for (int cls = 0; cls < n_classes_; ++cls) {
-                        atom.teacher_class_weight[(size_t)cls] +=
-                            w * teacher_prob_flat_[teacher_base + static_cast<size_t>(cls)];
+                atom.pos_weight *= uniform_sample_weight_;
+                atom.neg_weight *= uniform_sample_weight_;
+                atom.teacher_pos_weight = teacher_pos_sum * uniform_sample_weight_;
+                atom.teacher_neg_weight =
+                    (static_cast<double>(atom.row_count) - teacher_pos_sum) * uniform_sample_weight_;
+            } else {
+                for (int idx : bins.members[atom_pos]) {
+                    const double w = sample_weight_[(size_t)idx];
+                    const int label = y_[(size_t)idx];
+                    if (binary_mode_ && label == 1) {
+                        atom.pos_weight += w;
+                    } else if (binary_mode_) {
+                        atom.neg_weight += w;
+                    } else {
+                        atom.class_weight[(size_t)label] += w;
+                    }
+                    if (binary_mode_) {
+                        const double teacher_prob = teacher_prob_[(size_t)idx];
+                        atom.teacher_pos_weight += w * teacher_prob;
+                        atom.teacher_neg_weight += w * (1.0 - teacher_prob);
+                    } else {
+                        const size_t teacher_base =
+                            static_cast<size_t>(idx) * static_cast<size_t>(n_classes_);
+                        for (int cls = 0; cls < n_classes_; ++cls) {
+                            atom.teacher_class_weight[(size_t)cls] +=
+                                w * teacher_prob_flat_[teacher_base + static_cast<size_t>(cls)];
+                        }
                     }
                 }
             }

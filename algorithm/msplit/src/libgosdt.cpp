@@ -9,8 +9,8 @@
 #include <dataset.hpp>
 #include <msplit.hpp>
 #include <string>
+#include <span>
 #include <vector>
-#include <cstring>
 
 // #define STRINGIFY(x) #x
 // #define MACRO_STRINGIFY(x) STRINGIFY(x)
@@ -221,28 +221,28 @@ PYBIND11_MODULE(_libgosdt, m) {
             const int n_rows = static_cast<int>(z.shape(0));
             const int n_features = static_cast<int>(z.shape(1));
 
-            std::vector<int> z_flat(static_cast<size_t>(n_rows) * static_cast<size_t>(n_features));
-            std::memcpy(z_flat.data(), z.data(), z_flat.size() * sizeof(int));
+            const std::span<const int> z_flat(
+                z.data(),
+                static_cast<size_t>(n_rows) * static_cast<size_t>(n_features));
+            const std::span<const int> y_vec(y.data(), static_cast<size_t>(n_rows));
 
-            std::vector<int> y_vec(static_cast<size_t>(n_rows));
-            std::memcpy(y_vec.data(), y.data(), y_vec.size() * sizeof(int));
-
-            std::vector<double> sample_weight_vec;
+            std::span<const double> sample_weight_vec;
+            py::array_t<double, py::array::c_style | py::array::forcecast> sw;
             if (!sample_weight.is_none()) {
-                py::array_t<double, py::array::c_style | py::array::forcecast> sw =
+                sw =
                     sample_weight.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>();
                 if (sw.ndim() != 1 || sw.shape(0) != z.shape(0)) {
                     throw std::runtime_error(
                         "msplit_fit expects sample_weight to be None or a 1D float array with shape[0] == z.shape[0].");
                 }
-                sample_weight_vec.resize(static_cast<size_t>(n_rows));
-                std::memcpy(sample_weight_vec.data(), sw.data(), sample_weight_vec.size() * sizeof(double));
+                sample_weight_vec = std::span<const double>(sw.data(), static_cast<size_t>(n_rows));
             }
 
-            std::vector<double> teacher_logit_vec;
+            std::span<const double> teacher_logit_vec;
+            py::array_t<double, py::array::c_style | py::array::forcecast> teacher;
             int teacher_class_count = 0;
             if (!teacher_logit.is_none()) {
-                py::array_t<double, py::array::c_style | py::array::forcecast> teacher =
+                teacher =
                     teacher_logit.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>();
                 if (teacher.ndim() == 1) {
                     if (teacher.shape(0) != z.shape(0)) {
@@ -250,16 +250,18 @@ PYBIND11_MODULE(_libgosdt, m) {
                             "msplit_fit expects 1D teacher_logit to have shape[0] == z.shape[0].");
                     }
                     teacher_class_count = 1;
-                    teacher_logit_vec.resize(static_cast<size_t>(n_rows));
-                    std::memcpy(teacher_logit_vec.data(), teacher.data(), teacher_logit_vec.size() * sizeof(double));
+                    teacher_logit_vec = std::span<const double>(
+                        teacher.data(),
+                        static_cast<size_t>(n_rows));
                 } else if (teacher.ndim() == 2) {
                     if (teacher.shape(0) != z.shape(0) || teacher.shape(1) <= 0) {
                         throw std::runtime_error(
                             "msplit_fit expects 2D teacher_logit to have shape (n_rows, n_classes).");
                     }
                     teacher_class_count = static_cast<int>(teacher.shape(1));
-                    teacher_logit_vec.resize(static_cast<size_t>(teacher.shape(0) * teacher.shape(1)));
-                    std::memcpy(teacher_logit_vec.data(), teacher.data(), teacher_logit_vec.size() * sizeof(double));
+                    teacher_logit_vec = std::span<const double>(
+                        teacher.data(),
+                        static_cast<size_t>(teacher.shape(0) * teacher.shape(1)));
                 } else {
                     throw std::runtime_error(
                         "msplit_fit expects teacher_logit to be None, a 1D float array, or a 2D float array.");
@@ -267,11 +269,15 @@ PYBIND11_MODULE(_libgosdt, m) {
             }
 
             auto load_boundary_prior =
-                [&](py::object obj, const char *name, std::vector<double> &out_vec, int &n_cols) {
+                [&](py::object obj,
+                    const char *name,
+                    py::array_t<double, py::array::c_style | py::array::forcecast> &arr,
+                    std::span<const double> &out_vec,
+                    int &n_cols) {
                     if (obj.is_none()) {
                         return;
                     }
-                    py::array_t<double, py::array::c_style | py::array::forcecast> arr =
+                    arr =
                         obj.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>();
                     if (arr.ndim() != 2 || arr.shape(0) != z.shape(1)) {
                         throw std::runtime_error(std::string("msplit_fit expects ") + name +
@@ -282,17 +288,36 @@ PYBIND11_MODULE(_libgosdt, m) {
                     } else if (n_cols != static_cast<int>(arr.shape(1))) {
                         throw std::runtime_error("Teacher boundary prior arrays must share the same shape.");
                     }
-                    out_vec.resize(static_cast<size_t>(arr.shape(0) * arr.shape(1)));
-                    std::memcpy(out_vec.data(), arr.data(), out_vec.size() * sizeof(double));
+                    out_vec = std::span<const double>(
+                        arr.data(),
+                        static_cast<size_t>(arr.shape(0) * arr.shape(1)));
                 };
 
             int teacher_boundary_cols = -1;
-            std::vector<double> teacher_boundary_gain_vec;
-            std::vector<double> teacher_boundary_cover_vec;
-            std::vector<double> teacher_boundary_value_jump_vec;
-            load_boundary_prior(teacher_boundary_gain, "teacher_boundary_gain", teacher_boundary_gain_vec, teacher_boundary_cols);
-            load_boundary_prior(teacher_boundary_cover, "teacher_boundary_cover", teacher_boundary_cover_vec, teacher_boundary_cols);
-            load_boundary_prior(teacher_boundary_value_jump, "teacher_boundary_value_jump", teacher_boundary_value_jump_vec, teacher_boundary_cols);
+            py::array_t<double, py::array::c_style | py::array::forcecast> teacher_boundary_gain_arr;
+            py::array_t<double, py::array::c_style | py::array::forcecast> teacher_boundary_cover_arr;
+            py::array_t<double, py::array::c_style | py::array::forcecast> teacher_boundary_value_jump_arr;
+            std::span<const double> teacher_boundary_gain_vec;
+            std::span<const double> teacher_boundary_cover_vec;
+            std::span<const double> teacher_boundary_value_jump_vec;
+            load_boundary_prior(
+                teacher_boundary_gain,
+                "teacher_boundary_gain",
+                teacher_boundary_gain_arr,
+                teacher_boundary_gain_vec,
+                teacher_boundary_cols);
+            load_boundary_prior(
+                teacher_boundary_cover,
+                "teacher_boundary_cover",
+                teacher_boundary_cover_arr,
+                teacher_boundary_cover_vec,
+                teacher_boundary_cols);
+            load_boundary_prior(
+                teacher_boundary_value_jump,
+                "teacher_boundary_value_jump",
+                teacher_boundary_value_jump_arr,
+                teacher_boundary_value_jump_vec,
+                teacher_boundary_cols);
             if (teacher_boundary_cols < 0) {
                 teacher_boundary_cols = 0;
             }

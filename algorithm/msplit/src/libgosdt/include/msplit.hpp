@@ -1,6 +1,7 @@
 #ifndef MSPLIT_H
 #define MSPLIT_H
 
+#include <span>
 #include <vector>
 
 #include "nlohmann/json.hpp"
@@ -173,16 +174,16 @@ struct FitResult {
 };
 
 FitResult fit(
-    const std::vector<int> &x_flat,
+    std::span<const int> x_flat,
     int n_rows,
     int n_features,
-    const std::vector<int> &y,
-    const std::vector<double> &sample_weight,
-    const std::vector<double> &teacher_logit,
+    std::span<const int> y,
+    std::span<const double> sample_weight,
+    std::span<const double> teacher_logit,
     int teacher_class_count,
-    const std::vector<double> &teacher_boundary_gain,
-    const std::vector<double> &teacher_boundary_cover,
-    const std::vector<double> &teacher_boundary_value_jump,
+    std::span<const double> teacher_boundary_gain,
+    std::span<const double> teacher_boundary_cover,
+    std::span<const double> teacher_boundary_value_jump,
     int teacher_boundary_cols,
     int full_depth_budget,
     int lookahead_depth,

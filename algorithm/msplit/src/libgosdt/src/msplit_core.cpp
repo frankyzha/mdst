@@ -10,6 +10,8 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <queue>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -240,27 +242,11 @@ struct GreedyCacheEntry {
 class Solver {
    public:
     struct CanonicalSignatureBlock {
-        const int *row_key = nullptr;
+        int pattern_id = -1;
         int row_count = 0;
         double pos_weight = 0.0;
         double neg_weight = 0.0;
         std::vector<double> class_weight;
-    };
-
-    struct RowPatternPtrHash {
-        const Solver *solver = nullptr;
-
-        size_t operator()(const int *row_key) const noexcept {
-            return solver->hash_row_pattern(row_key);
-        }
-    };
-
-    struct RowPatternPtrEq {
-        const Solver *solver = nullptr;
-
-        bool operator()(const int *lhs, const int *rhs) const noexcept {
-            return solver->row_patterns_equal(lhs, rhs);
-        }
     };
 
     struct CanonicalSignatureSummary {
@@ -391,16 +377,16 @@ class Solver {
     };
 
     Solver(
-        const std::vector<int> &x_flat,
+        std::span<const int> x_flat,
         int n_rows,
         int n_features,
-        const std::vector<int> &y,
-        const std::vector<double> &sample_weight,
-        const std::vector<double> &teacher_logit,
+        std::span<const int> y,
+        std::span<const double> sample_weight,
+        std::span<const double> teacher_logit,
         int teacher_class_count,
-        const std::vector<double> &teacher_boundary_gain,
-        const std::vector<double> &teacher_boundary_cover,
-        const std::vector<double> &teacher_boundary_value_jump,
+        std::span<const double> teacher_boundary_gain,
+        std::span<const double> teacher_boundary_cover,
+        std::span<const double> teacher_boundary_value_jump,
         int teacher_boundary_cols,
         int full_depth_budget,
         int lookahead_depth,
@@ -595,43 +581,47 @@ class Solver {
         if (!sample_weight_raw_.empty() && (int)sample_weight_raw_.size() != n_rows_) {
             throw std::invalid_argument("MSPLIT sample_weight must have length n_rows when provided.");
         }
-        initialize_row_pattern_hashes();
+        initialize_row_patterns();
         initialize_runtime_overrides();
         initialize_class_info();
         initialize_weights();
         initialize_teacher_prob();
         initialize_feature_bin_max();
         initialize_teacher_boundary_strength();
-        profiling_greedy_complete_calls_by_depth_.assign(
-            static_cast<size_t>(full_depth_budget_) + 1U,
-            0);
-        heuristic_selector_nodes_by_depth_.assign(
-            static_cast<size_t>(full_depth_budget_) + 1U,
-            0);
-        heuristic_selector_candidate_total_by_depth_.assign(
-            static_cast<size_t>(full_depth_budget_) + 1U,
-            0);
-        heuristic_selector_candidate_pruned_total_by_depth_.assign(
-            static_cast<size_t>(full_depth_budget_) + 1U,
-            0);
-        heuristic_selector_survivor_total_by_depth_.assign(
-            static_cast<size_t>(full_depth_budget_) + 1U,
-            0);
-        heuristic_selector_leaf_optimal_nodes_by_depth_.assign(
-            static_cast<size_t>(full_depth_budget_) + 1U,
-            0);
-        heuristic_selector_improving_split_nodes_by_depth_.assign(
-            static_cast<size_t>(full_depth_budget_) + 1U,
-            0);
-        heuristic_selector_improving_split_retained_nodes_by_depth_.assign(
-            static_cast<size_t>(full_depth_budget_) + 1U,
-            0);
-        heuristic_selector_improving_split_margin_sum_by_depth_.assign(
-            static_cast<size_t>(full_depth_budget_) + 1U,
-            0.0);
-        heuristic_selector_improving_split_margin_max_by_depth_.assign(
-            static_cast<size_t>(full_depth_budget_) + 1U,
-            0.0);
+        if (profiling_enabled_) {
+            profiling_greedy_complete_calls_by_depth_.assign(
+                static_cast<size_t>(full_depth_budget_) + 1U,
+                0);
+        }
+        if (diagnostics_enabled_) {
+            heuristic_selector_nodes_by_depth_.assign(
+                static_cast<size_t>(full_depth_budget_) + 1U,
+                0);
+            heuristic_selector_candidate_total_by_depth_.assign(
+                static_cast<size_t>(full_depth_budget_) + 1U,
+                0);
+            heuristic_selector_candidate_pruned_total_by_depth_.assign(
+                static_cast<size_t>(full_depth_budget_) + 1U,
+                0);
+            heuristic_selector_survivor_total_by_depth_.assign(
+                static_cast<size_t>(full_depth_budget_) + 1U,
+                0);
+            heuristic_selector_leaf_optimal_nodes_by_depth_.assign(
+                static_cast<size_t>(full_depth_budget_) + 1U,
+                0);
+            heuristic_selector_improving_split_nodes_by_depth_.assign(
+                static_cast<size_t>(full_depth_budget_) + 1U,
+                0);
+            heuristic_selector_improving_split_retained_nodes_by_depth_.assign(
+                static_cast<size_t>(full_depth_budget_) + 1U,
+                0);
+            heuristic_selector_improving_split_margin_sum_by_depth_.assign(
+                static_cast<size_t>(full_depth_budget_) + 1U,
+                0.0);
+            heuristic_selector_improving_split_margin_max_by_depth_.assign(
+                static_cast<size_t>(full_depth_budget_) + 1U,
+                0.0);
+        }
     }
 
     FitResult fit() {
@@ -827,20 +817,26 @@ class Solver {
         return atomized_telemetry_;
     }
 
+    bool diagnostics_enabled() const noexcept {
+        return diagnostics_enabled_;
+    }
+
    private:
-    const std::vector<int> &x_flat_;
+    std::span<const int> x_flat_;
     int n_rows_;
     int n_features_;
-    const std::vector<int> &y_;
-    const std::vector<double> &sample_weight_raw_;
-    const std::vector<double> &teacher_logit_raw_;
+    std::span<const int> y_;
+    std::span<const double> sample_weight_raw_;
+    std::span<const double> teacher_logit_raw_;
     int teacher_class_count_ = 0;
-    const std::vector<double> &teacher_boundary_gain_raw_;
-    const std::vector<double> &teacher_boundary_cover_raw_;
-    const std::vector<double> &teacher_boundary_value_jump_raw_;
+    std::span<const double> teacher_boundary_gain_raw_;
+    std::span<const double> teacher_boundary_cover_raw_;
+    std::span<const double> teacher_boundary_value_jump_raw_;
     std::vector<size_t> row_pattern_hash_;
+    std::vector<int> row_pattern_id_;
     std::vector<double> sample_weight_;
     bool sample_weight_uniform_ = false;
+    double uniform_sample_weight_ = 0.0;
     std::vector<double> teacher_prob_;
     std::vector<double> teacher_prob_flat_;
     std::vector<int> teacher_prediction_;
@@ -912,35 +908,37 @@ class Solver {
     const bool profiling_enabled_ = env_flag_enabled("MSPLIT_ENABLE_PROFILING");
     const bool detailed_selector_telemetry_enabled_ =
         env_flag_enabled("MSPLIT_ENABLE_DETAILED_TELEMETRY");
-        long long debr_refine_calls_ = 0;
-        long long debr_refine_improved_ = 0;
-        long long debr_total_moves_ = 0;
-        long long debr_bridge_policy_calls_ = 0;
-        long long debr_refine_windowed_calls_ = 0;
-        long long debr_refine_unwindowed_calls_ = 0;
-        long long debr_refine_overlap_segments_ = 0;
-        long long debr_refine_calls_with_overlap_ = 0;
-        long long debr_refine_calls_without_overlap_ = 0;
-        long long debr_candidate_total_ = 0;
-        long long debr_candidate_legal_ = 0;
-        long long debr_candidate_source_size_rejects_ = 0;
-        long long debr_candidate_target_size_rejects_ = 0;
-        long long debr_candidate_descent_eligible_ = 0;
-        long long debr_candidate_descent_rejected_ = 0;
-        long long debr_candidate_bridge_eligible_ = 0;
-        long long debr_candidate_bridge_window_blocked_ = 0;
-        long long debr_candidate_bridge_used_blocked_ = 0;
-        long long debr_candidate_bridge_guide_rejected_ = 0;
-        long long debr_candidate_cleanup_eligible_ = 0;
-        long long debr_candidate_cleanup_primary_rejected_ = 0;
-        long long debr_candidate_cleanup_complexity_rejected_ = 0;
-        long long debr_candidate_score_rejected_ = 0;
-        long long debr_descent_moves_ = 0;
-        long long debr_bridge_moves_ = 0;
-        long long debr_simplify_moves_ = 0;
-        std::vector<long long> debr_source_group_row_size_histogram_;
-        std::vector<long long> debr_source_component_atom_size_histogram_;
-        std::vector<long long> debr_source_component_row_size_histogram_;
+    const bool diagnostics_enabled_ =
+        detailed_selector_telemetry_enabled_ || env_flag_enabled("MSPLIT_ENABLE_DIAGNOSTICS");
+    long long debr_refine_calls_ = 0;
+    long long debr_refine_improved_ = 0;
+    long long debr_total_moves_ = 0;
+    long long debr_bridge_policy_calls_ = 0;
+    long long debr_refine_windowed_calls_ = 0;
+    long long debr_refine_unwindowed_calls_ = 0;
+    long long debr_refine_overlap_segments_ = 0;
+    long long debr_refine_calls_with_overlap_ = 0;
+    long long debr_refine_calls_without_overlap_ = 0;
+    long long debr_candidate_total_ = 0;
+    long long debr_candidate_legal_ = 0;
+    long long debr_candidate_source_size_rejects_ = 0;
+    long long debr_candidate_target_size_rejects_ = 0;
+    long long debr_candidate_descent_eligible_ = 0;
+    long long debr_candidate_descent_rejected_ = 0;
+    long long debr_candidate_bridge_eligible_ = 0;
+    long long debr_candidate_bridge_window_blocked_ = 0;
+    long long debr_candidate_bridge_used_blocked_ = 0;
+    long long debr_candidate_bridge_guide_rejected_ = 0;
+    long long debr_candidate_cleanup_eligible_ = 0;
+    long long debr_candidate_cleanup_primary_rejected_ = 0;
+    long long debr_candidate_cleanup_complexity_rejected_ = 0;
+    long long debr_candidate_score_rejected_ = 0;
+    long long debr_descent_moves_ = 0;
+    long long debr_bridge_moves_ = 0;
+    long long debr_simplify_moves_ = 0;
+    std::vector<long long> debr_source_group_row_size_histogram_;
+    std::vector<long long> debr_source_component_atom_size_histogram_;
+    std::vector<long long> debr_source_component_row_size_histogram_;
     double debr_total_hard_gain_ = 0.0;
     double debr_total_soft_gain_ = 0.0;
     double debr_total_delta_j_ = 0.0;
@@ -1024,25 +1022,19 @@ class Solver {
     std::vector<std::vector<long long>> per_node_candidate_components_;
 
     std::vector<int> feature_bin_max_;
-    mutable std::vector<int> ordered_bin_stamp_;
-    mutable int ordered_bin_stamp_token_ = 0;
-    mutable std::vector<std::vector<int>> ordered_bin_members_;
-    mutable std::vector<int> ordered_bin_last_idx_;
-    mutable std::vector<unsigned char> ordered_bin_needs_sort_;
-    mutable std::vector<int> ordered_bin_touched_;
 
     mutable std::unordered_map<std::string, CanonicalSignatureSummary> canonical_signature_cache_;
     mutable std::unordered_map<std::string, GreedyCacheEntry> greedy_cache_;
     Clock::time_point start_time_;
-
     int x(int row, int feature) const { return x_flat_[(size_t)row * (size_t)n_features_ + (size_t)feature]; }
 
     const int *row_ptr(int row) const {
         return x_flat_.data() + (static_cast<size_t>(row) * static_cast<size_t>(n_features_));
     }
 
-    void initialize_row_pattern_hashes() {
+    void initialize_row_patterns() {
         row_pattern_hash_.assign(static_cast<size_t>(n_rows_), 0U);
+        row_pattern_id_.assign(static_cast<size_t>(n_rows_), -1);
         for (int row = 0; row < n_rows_; ++row) {
             const int *row_key = row_ptr(row);
             size_t seed = 1469598103934665603ULL;
@@ -1052,19 +1044,28 @@ class Solver {
             }
             row_pattern_hash_[(size_t)row] = seed;
         }
-    }
-
-    size_t row_index_from_ptr(const int *row_key) const noexcept {
-        return static_cast<size_t>(row_key - x_flat_.data()) / static_cast<size_t>(n_features_);
-    }
-
-    size_t hash_row_pattern(const int *row_key) const noexcept {
-        return row_pattern_hash_[row_index_from_ptr(row_key)];
-    }
-
-    bool row_patterns_equal(const int *lhs, const int *rhs) const noexcept {
-        return lhs == rhs ||
-               std::memcmp(lhs, rhs, static_cast<size_t>(n_features_) * sizeof(int)) == 0;
+        std::vector<int> row_order(static_cast<size_t>(n_rows_), 0);
+        std::iota(row_order.begin(), row_order.end(), 0);
+        std::sort(
+            row_order.begin(),
+            row_order.end(),
+            [&](int lhs_row, int rhs_row) {
+                return row_pattern_less(row_ptr(lhs_row), row_ptr(rhs_row));
+            });
+        int next_pattern_id = -1;
+        const int *previous_pattern = nullptr;
+        for (int row : row_order) {
+            const int *current_pattern = row_ptr(row);
+            if (previous_pattern == nullptr ||
+                std::memcmp(
+                    previous_pattern,
+                    current_pattern,
+                    static_cast<size_t>(n_features_) * sizeof(int)) != 0) {
+                ++next_pattern_id;
+                previous_pattern = current_pattern;
+            }
+            row_pattern_id_[(size_t)row] = next_pattern_id;
+        }
     }
 
     bool row_pattern_less(const int *lhs, const int *rhs) const noexcept {
@@ -1104,6 +1105,9 @@ class Solver {
     }
 
     void record_greedy_complete_call(int depth_remaining) {
+        if (!profiling_enabled_) {
+            return;
+        }
         const size_t bucket = depth_remaining < 0 ? 0U : static_cast<size_t>(depth_remaining);
         if (profiling_greedy_complete_calls_by_depth_.size() <= bucket) {
             profiling_greedy_complete_calls_by_depth_.resize(bucket + 1U, 0);
@@ -1123,10 +1127,12 @@ class Solver {
 
     void initialize_weights() {
         sample_weight_.assign((size_t)n_rows_, 0.0);
+        uniform_sample_weight_ = 0.0;
         if (sample_weight_raw_.empty()) {
             const double uniform = 1.0 / static_cast<double>(n_rows_);
             std::fill(sample_weight_.begin(), sample_weight_.end(), uniform);
             sample_weight_uniform_ = true;
+            uniform_sample_weight_ = uniform;
             return;
         }
 
@@ -1148,6 +1154,9 @@ class Solver {
             if (row > 0 && std::abs(sample_weight_[0] - sample_weight_[(size_t)row]) > kEpsUpdate) {
                 sample_weight_uniform_ = false;
             }
+        }
+        if (sample_weight_uniform_ && !sample_weight_.empty()) {
+            uniform_sample_weight_ = sample_weight_[0];
         }
     }
 
@@ -1406,6 +1415,31 @@ class Solver {
         SubproblemStats out;
         out.total_count = (int)indices.size();
         if (binary_mode_) {
+            if (sample_weight_uniform_) {
+                int reference_error_count = 0;
+                for (int idx : indices) {
+                    const int label = y_[(size_t)idx];
+                    if (teacher_prediction_[(size_t)idx] != label) {
+                        ++reference_error_count;
+                    }
+                    if (label == 1) {
+                        ++out.pos_count;
+                    } else {
+                        ++out.neg_count;
+                    }
+                }
+                out.pos_weight = static_cast<double>(out.pos_count) * uniform_sample_weight_;
+                out.neg_weight = static_cast<double>(out.neg_count) * uniform_sample_weight_;
+                out.sum_weight = static_cast<double>(out.total_count) * uniform_sample_weight_;
+                out.sum_weight_sq =
+                    static_cast<double>(out.total_count) * uniform_sample_weight_ * uniform_sample_weight_;
+                out.reference_error_weight =
+                    static_cast<double>(reference_error_count) * uniform_sample_weight_;
+                out.pure = (out.pos_count == 0 || out.neg_count == 0);
+                out.prediction = (out.pos_weight >= out.neg_weight) ? 1 : 0;
+                out.leaf_objective = split_leaf_loss(out.pos_weight, out.neg_weight) + regularization_;
+                return out;
+            }
             int first_label = -1;
             for (int idx : indices) {
                 const int label = y_[(size_t)idx];
@@ -1476,6 +1510,15 @@ class Solver {
     }
 
     bool build_ordered_bins(const std::vector<int> &indices, int feature, OrderedBins &out) const {
+        struct OrderedBinScratch {
+            std::vector<int> stamp;
+            int stamp_token = 0;
+            std::vector<std::vector<int>> members;
+            std::vector<int> last_idx;
+            std::vector<unsigned char> needs_sort;
+            std::vector<int> touched;
+        };
+        static thread_local OrderedBinScratch scratch;
         if (feature < 0 || feature >= n_features_) {
             return false;
         }
@@ -1485,50 +1528,50 @@ class Solver {
         }
 
         const size_t dense_size = (size_t)max_bin + 1U;
-        if (ordered_bin_stamp_.size() < dense_size) {
-            ordered_bin_stamp_.resize(dense_size, 0);
-            ordered_bin_members_.resize(dense_size);
-            ordered_bin_last_idx_.resize(dense_size, 0);
-            ordered_bin_needs_sort_.resize(dense_size, 0);
+        if (scratch.stamp.size() < dense_size) {
+            scratch.stamp.resize(dense_size, 0);
+            scratch.members.resize(dense_size);
+            scratch.last_idx.resize(dense_size, 0);
+            scratch.needs_sort.resize(dense_size, 0);
         }
 
-        ++ordered_bin_stamp_token_;
-        if (ordered_bin_stamp_token_ == std::numeric_limits<int>::max()) {
-            std::fill(ordered_bin_stamp_.begin(), ordered_bin_stamp_.end(), 0);
-            ordered_bin_stamp_token_ = 1;
+        ++scratch.stamp_token;
+        if (scratch.stamp_token == std::numeric_limits<int>::max()) {
+            std::fill(scratch.stamp.begin(), scratch.stamp.end(), 0);
+            scratch.stamp_token = 1;
         }
-        const int stamp = ordered_bin_stamp_token_;
+        const int stamp = scratch.stamp_token;
 
-        ordered_bin_touched_.clear();
-        ordered_bin_touched_.reserve(std::min((size_t)indices.size(), dense_size));
+        scratch.touched.clear();
+        scratch.touched.reserve(std::min((size_t)indices.size(), dense_size));
 
         for (int idx : indices) {
             const int bin = x(idx, feature);
-            if (ordered_bin_stamp_[(size_t)bin] != stamp) {
-                ordered_bin_stamp_[(size_t)bin] = stamp;
-                ordered_bin_members_[(size_t)bin].clear();
-                ordered_bin_last_idx_[(size_t)bin] = idx;
-                ordered_bin_needs_sort_[(size_t)bin] = 0;
-                ordered_bin_touched_.push_back(bin);
-            } else if (idx < ordered_bin_last_idx_[(size_t)bin]) {
-                ordered_bin_needs_sort_[(size_t)bin] = 1;
+            if (scratch.stamp[(size_t)bin] != stamp) {
+                scratch.stamp[(size_t)bin] = stamp;
+                scratch.members[(size_t)bin].clear();
+                scratch.last_idx[(size_t)bin] = idx;
+                scratch.needs_sort[(size_t)bin] = 0;
+                scratch.touched.push_back(bin);
+            } else if (idx < scratch.last_idx[(size_t)bin]) {
+                scratch.needs_sort[(size_t)bin] = 1;
             }
-            ordered_bin_last_idx_[(size_t)bin] = idx;
-            ordered_bin_members_[(size_t)bin].push_back(idx);
+            scratch.last_idx[(size_t)bin] = idx;
+            scratch.members[(size_t)bin].push_back(idx);
         }
 
-        if (ordered_bin_touched_.size() <= 1U) {
+        if (scratch.touched.size() <= 1U) {
             return false;
         }
 
-        std::sort(ordered_bin_touched_.begin(), ordered_bin_touched_.end());
+        std::sort(scratch.touched.begin(), scratch.touched.end());
         out.values.clear();
         out.members.clear();
-        out.values.reserve(ordered_bin_touched_.size());
-        out.members.reserve(ordered_bin_touched_.size());
-        for (int bin : ordered_bin_touched_) {
-            auto &members = ordered_bin_members_[(size_t)bin];
-            if (ordered_bin_needs_sort_[(size_t)bin]) {
+        out.values.reserve(scratch.touched.size());
+        out.members.reserve(scratch.touched.size());
+        for (int bin : scratch.touched) {
+            auto &members = scratch.members[(size_t)bin];
+            if (scratch.needs_sort[(size_t)bin]) {
                 std::sort(members.begin(), members.end());
             }
             out.values.push_back(bin);
@@ -1547,12 +1590,54 @@ class Solver {
             total += bins.members[(size_t)atom_pos].size();
         }
         dst.clear();
-        dst.reserve(total);
-        for (int atom_pos : group_positions) {
-            const auto &members = bins.members[(size_t)atom_pos];
-            dst.insert(dst.end(), members.begin(), members.end());
+        if (group_positions.empty()) {
+            return;
         }
-        std::sort(dst.begin(), dst.end());
+        if (group_positions.size() == 1U) {
+            dst = bins.members[(size_t)group_positions.front()];
+            return;
+        }
+        dst.reserve(total);
+        if (group_positions.size() == 2U) {
+            const auto &lhs = bins.members[(size_t)group_positions[0]];
+            const auto &rhs = bins.members[(size_t)group_positions[1]];
+            dst.resize(total);
+            std::merge(lhs.begin(), lhs.end(), rhs.begin(), rhs.end(), dst.begin());
+            return;
+        }
+        struct MergeCursor {
+            int value = 0;
+            size_t group_idx = 0U;
+            size_t member_idx = 0U;
+        };
+        struct MergeCursorGreater {
+            bool operator()(const MergeCursor &lhs, const MergeCursor &rhs) const noexcept {
+                if (lhs.value != rhs.value) {
+                    return lhs.value > rhs.value;
+                }
+                if (lhs.group_idx != rhs.group_idx) {
+                    return lhs.group_idx > rhs.group_idx;
+                }
+                return lhs.member_idx > rhs.member_idx;
+            }
+        };
+        std::priority_queue<MergeCursor, std::vector<MergeCursor>, MergeCursorGreater> heap;
+        for (size_t group_idx = 0; group_idx < group_positions.size(); ++group_idx) {
+            const auto &members = bins.members[(size_t)group_positions[group_idx]];
+            if (!members.empty()) {
+                heap.push(MergeCursor{members[0], group_idx, 0U});
+            }
+        }
+        while (!heap.empty()) {
+            const MergeCursor cursor = heap.top();
+            heap.pop();
+            dst.push_back(cursor.value);
+            const auto &members = bins.members[(size_t)group_positions[cursor.group_idx]];
+            const size_t next_idx = cursor.member_idx + 1U;
+            if (next_idx < members.size()) {
+                heap.push(MergeCursor{members[next_idx], cursor.group_idx, next_idx});
+            }
+        }
     }
 
     std::string canonical_signature_key(const std::vector<int> &indices) const {
@@ -1584,17 +1669,14 @@ class Solver {
 
         CanonicalSignatureSummary summary;
         summary.block_count = 0U;
-        std::unordered_map<const int *, CanonicalSignatureBlock, RowPatternPtrHash, RowPatternPtrEq> blocks_by_pattern(
-            0U,
-            RowPatternPtrHash{this},
-            RowPatternPtrEq{this});
+        std::unordered_map<int, CanonicalSignatureBlock> blocks_by_pattern;
         blocks_by_pattern.reserve(indices.size());
 
         for (int row : indices) {
-            const int *row_key = row_ptr(row);
-            CanonicalSignatureBlock &block = blocks_by_pattern[row_key];
-            if (block.row_key == nullptr) {
-                block.row_key = row_key;
+            const int pattern_id = row_pattern_id_[(size_t)row];
+            CanonicalSignatureBlock &block = blocks_by_pattern[pattern_id];
+            if (block.pattern_id < 0) {
+                block.pattern_id = pattern_id;
                 if (!binary_mode_) {
                     block.class_weight.assign((size_t)n_classes_, 0.0);
                 }
@@ -1620,8 +1702,8 @@ class Solver {
         std::sort(
             blocks.begin(),
             blocks.end(),
-            [&](const CanonicalSignatureBlock &lhs, const CanonicalSignatureBlock &rhs) {
-                return row_pattern_less(lhs.row_key, rhs.row_key);
+            [](const CanonicalSignatureBlock &lhs, const CanonicalSignatureBlock &rhs) {
+                return lhs.pattern_id < rhs.pattern_id;
             });
 
         summary.signature_bound = regularization_;
@@ -1683,16 +1765,16 @@ class Solver {
 }  // namespace
 
 FitResult fit(
-    const std::vector<int> &x_flat,
+    std::span<const int> x_flat,
     int n_rows,
     int n_features,
-    const std::vector<int> &y,
-    const std::vector<double> &sample_weight,
-    const std::vector<double> &teacher_logit,
+    std::span<const int> y,
+    std::span<const double> sample_weight,
+    std::span<const double> teacher_logit,
     int teacher_class_count,
-    const std::vector<double> &teacher_boundary_gain,
-    const std::vector<double> &teacher_boundary_cover,
-    const std::vector<double> &teacher_boundary_value_jump,
+    std::span<const double> teacher_boundary_gain,
+    std::span<const double> teacher_boundary_cover,
+    std::span<const double> teacher_boundary_value_jump,
     int teacher_boundary_cols,
     int full_depth_budget,
     int lookahead_depth,
