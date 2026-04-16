@@ -1598,17 +1598,6 @@
         PreparedFeatureAtomized &prepared
     ) const {
         prepared = PreparedFeatureAtomized{};
-        auto &telemetry = const_cast<Solver *>(this)->atomized_telemetry();
-        const bool diagnostics = diagnostics_enabled();
-        auto bump_count_histogram = [&](std::vector<long long> &hist, size_t bucket) {
-            if (!diagnostics) {
-                return;
-            }
-            if (hist.size() <= bucket) {
-                hist.resize(bucket + 1U, 0LL);
-            }
-            ++hist[bucket];
-        };
         if (!build_ordered_bins(indices, feature, prepared.bins)) {
             return false;
         }
@@ -1619,16 +1608,10 @@
                 &prepared.atom_imp_floor)) {
             return false;
         }
-        ++telemetry.atomized_features_prepared;
-        bump_count_histogram(telemetry.atomized_feature_atom_count_histogram, prepared.atoms.size());
 
         const int q_support = std::max(0, (int)indices.size() / std::max(1, min_child_size_));
         prepared.q_effective = std::min(max_groups_for_bins((int)prepared.atoms.size()), q_support);
-        bump_count_histogram(
-            telemetry.atomized_feature_q_effective_histogram,
-            static_cast<size_t>(std::max(0, prepared.q_effective)));
         if (prepared.q_effective < 2) {
-            bump_count_histogram(telemetry.atomized_feature_block_atom_count_histogram, prepared.atoms.size());
             return false;
         }
         prepared.atom_prefix = build_atomized_prefixes(prepared.atoms);
@@ -1655,23 +1638,6 @@
                 prepared.block_atoms,
                 compression_rule);
             prepared.has_block_compression = prepared.block_atoms.size() < prepared.atoms.size();
-        }
-        bump_count_histogram(
-            telemetry.atomized_feature_block_atom_count_histogram,
-            prepared.has_block_compression && !prepared.block_atoms.empty()
-                ? prepared.block_atoms.size()
-                : prepared.atoms.size());
-        if (prepared.has_block_compression) {
-            ++telemetry.atomized_compression_features_applied;
-            if (prepared.block_atoms.size() == 1U) {
-                ++telemetry.atomized_compression_features_collapsed_to_single_block;
-            }
-            telemetry.atomized_compression_atoms_before_total +=
-                static_cast<long long>(prepared.atoms.size());
-            telemetry.atomized_compression_blocks_after_total +=
-                static_cast<long long>(prepared.block_atoms.size());
-            telemetry.atomized_compression_atoms_merged_total +=
-                static_cast<long long>(prepared.atoms.size() - prepared.block_atoms.size());
         }
         if (prepared.has_block_compression) {
             prepared.block_prefix = build_atomized_prefixes(prepared.block_atoms);
@@ -1716,7 +1682,6 @@
             }
             prepared.coarse_by_groups[(size_t)groups] = std::move(coarse);
             prepared.coarse_by_groups_hardloss[(size_t)groups] = std::move(hardloss_coarse);
-            ++telemetry.atomized_coarse_candidates;
             any_feasible = true;
         }
 

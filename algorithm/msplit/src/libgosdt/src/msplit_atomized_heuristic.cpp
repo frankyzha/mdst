@@ -295,18 +295,134 @@
         candidate_evals.reserve((size_t)n_features_ * 2U);
         size_t preserved_feature_count = 0U;
         auto *self = const_cast<Solver *>(this);
+        const bool diagnostics = diagnostics_enabled();
+        auto bump_count_histogram = [&](std::vector<long long> &hist, size_t bucket) {
+            if (!diagnostics) {
+                return;
+            }
+            if (hist.size() <= bucket) {
+                hist.resize(bucket + 1U, 0LL);
+            }
+            ++hist[bucket];
+        };
+        auto record_feature_prepare_telemetry = [&](const PreparedFeatureAtomized &prepared) {
+            if (prepared.atoms.empty()) {
+                return;
+            }
+            auto &telemetry = self->atomized_telemetry();
+            ++telemetry.atomized_features_prepared;
+            bump_count_histogram(
+                telemetry.atomized_feature_atom_count_histogram,
+                prepared.atoms.size());
+            bump_count_histogram(
+                telemetry.atomized_feature_q_effective_histogram,
+                static_cast<size_t>(std::max(0, prepared.q_effective)));
+            const size_t block_bucket =
+                prepared.has_block_compression && !prepared.block_atoms.empty()
+                    ? prepared.block_atoms.size()
+                    : prepared.atoms.size();
+            bump_count_histogram(
+                telemetry.atomized_feature_block_atom_count_histogram,
+                block_bucket);
+            if (prepared.has_block_compression) {
+                ++telemetry.atomized_compression_features_applied;
+                if (prepared.block_atoms.size() == 1U) {
+                    ++telemetry.atomized_compression_features_collapsed_to_single_block;
+                }
+                telemetry.atomized_compression_atoms_before_total +=
+                    static_cast<long long>(prepared.atoms.size());
+                telemetry.atomized_compression_blocks_after_total +=
+                    static_cast<long long>(prepared.block_atoms.size());
+                telemetry.atomized_compression_atoms_merged_total +=
+                    static_cast<long long>(prepared.atoms.size() - prepared.block_atoms.size());
+            }
+            long long feasible_group_count = 0;
+            for (size_t groups = 2; groups < prepared.coarse_by_groups.size(); ++groups) {
+                const bool impurity_feasible = prepared.coarse_by_groups[groups].candidate.feasible;
+                const bool hardloss_feasible =
+                    groups < prepared.coarse_by_groups_hardloss.size() &&
+                    prepared.coarse_by_groups_hardloss[groups].candidate.feasible;
+                if (impurity_feasible || hardloss_feasible) {
+                    ++feasible_group_count;
+                }
+            }
+            telemetry.atomized_coarse_candidates += feasible_group_count;
+        };
+
+        const bool enable_parallel_feature_prep = worker_limit_ > 1 && n_features_ > 1;
+        if (enable_parallel_feature_prep) {
+            std::vector<PreparedFeatureAtomized> feature_prepared((size_t)n_features_);
+            std::vector<std::vector<CandidateEval>> feature_candidate_evals((size_t)n_features_);
+            std::vector<long long> feature_impurity_pair_counts((size_t)n_features_, 0LL);
+            std::vector<long long> feature_hardloss_pair_counts((size_t)n_features_, 0LL);
+            std::vector<double> feature_prepare_seconds((size_t)n_features_, 0.0);
+            std::vector<unsigned char> feature_preserved((size_t)n_features_, 0U);
+
+            tbb::task_arena arena(worker_limit_);
+            arena.execute([&]() {
+                tbb::parallel_for(
+                    tbb::blocked_range<int>(0, n_features_),
+                    [&](const tbb::blocked_range<int> &range) {
+                        for (int feature = range.begin(); feature != range.end(); ++feature) {
+                            PreparedFeatureAtomized prepared;
+                            const auto feature_start = Clock::now();
+                            const bool preserved = prepare_feature_atomized_local(
+                                indices,
+                                feature,
+                                mu_node,
+                                prepared);
+                            feature_prepare_seconds[(size_t)feature] =
+                                std::chrono::duration<double>(Clock::now() - feature_start).count();
+                            if (!prepared.atoms.empty()) {
+                                feature_prepared[(size_t)feature] = std::move(prepared);
+                            }
+                            if (!preserved) {
+                                continue;
+                            }
+                            feature_preserved[(size_t)feature] = 1U;
+                            append_cheap_candidate_evals_for_feature(
+                                feature,
+                                feature_prepared[(size_t)feature],
+                                mu_node,
+                                above_lookahead,
+                                feature_candidate_evals[(size_t)feature],
+                                &feature_impurity_pair_counts[(size_t)feature],
+                                &feature_hardloss_pair_counts[(size_t)feature]);
+                        }
+                    });
+            });
+
+            for (int feature = 0; feature < n_features_; ++feature) {
+                if (profiling_enabled_) {
+                    profiling_feature_prepare_sec_ += feature_prepare_seconds[(size_t)feature];
+                }
+                record_feature_prepare_telemetry(feature_prepared[(size_t)feature]);
+                self->above_lookahead_impurity_pairs_total_ +=
+                    feature_impurity_pair_counts[(size_t)feature];
+                self->above_lookahead_hardloss_pairs_total_ +=
+                    feature_hardloss_pair_counts[(size_t)feature];
+                if (!feature_preserved[(size_t)feature]) {
+                    continue;
+                }
+                ++preserved_feature_count;
+                prepared_by_feature[(size_t)feature] = std::move(feature_prepared[(size_t)feature]);
+                candidate_evals.insert(
+                    candidate_evals.end(),
+                    feature_candidate_evals[(size_t)feature].begin(),
+                    feature_candidate_evals[(size_t)feature].end());
+            }
+            return preserved_feature_count;
+        }
+
         for (int feature = 0; feature < n_features_; ++feature) {
             PreparedFeatureAtomized prepared;
             const auto feature_start = Clock::now();
-            const bool preserved = prepare_feature_atomized_local(
-                indices,
-                feature,
-                mu_node,
-                prepared);
+            const bool preserved = prepare_feature_atomized_local(indices, feature, mu_node, prepared);
             if (profiling_enabled_) {
                 profiling_feature_prepare_sec_ +=
                     std::chrono::duration<double>(Clock::now() - feature_start).count();
             }
+            record_feature_prepare_telemetry(prepared);
             if (!preserved) {
                 continue;
             }
@@ -1038,6 +1154,12 @@
             std::shared_ptr<Node> tree;
         };
 
+        struct ExactChildResult {
+            bool valid = false;
+            double objective = kInfinity;
+            std::shared_ptr<Node> tree;
+        };
+
         struct CachedExactChildren {
             double objective = kInfinity;
             std::vector<std::shared_ptr<Node>> child_nodes;
@@ -1156,6 +1278,79 @@
             }
         };
 
+        const bool parallel_runtime_enabled =
+            worker_limit_ > 1 &&
+            !profiling_enabled_ &&
+            !diagnostics_enabled_;
+
+        auto acquire_parallel_solver = [&]() -> Solver & {
+            struct CachedClone {
+                std::uint64_t owner_instance_id = 0;
+                std::unique_ptr<Solver> solver;
+            };
+            static thread_local CachedClone cached_clone;
+            if (cached_clone.owner_instance_id != solver_instance_id_ || !cached_clone.solver) {
+                cached_clone.owner_instance_id = solver_instance_id_;
+                cached_clone.solver = std::make_unique<Solver>(
+                    x_flat_,
+                    n_rows_,
+                    n_features_,
+                    y_,
+                    sample_weight_raw_,
+                    teacher_logit_raw_,
+                    teacher_class_count_,
+                    teacher_boundary_gain_raw_,
+                    teacher_boundary_cover_raw_,
+                    teacher_boundary_value_jump_raw_,
+                    teacher_boundary_cols_,
+                    full_depth_budget_,
+                    lookahead_depth_,
+                    regularization_,
+                    min_split_size_,
+                    min_child_size_,
+                    time_limit_seconds_,
+                    max_branching_,
+                    exactify_top_k_,
+                    1);
+                cached_clone.solver->shared_cache_bundle_ = shared_cache_bundle_;
+                cached_clone.solver->start_time_ = start_time_;
+                register_parallel_clone(cached_clone.solver.get());
+            }
+            return *cached_clone.solver;
+        };
+
+        auto child_requires_recursion =
+            [&](const std::vector<int> &subset_sorted, const SubproblemStats &child_stats) {
+                return !(depth_remaining == 1 ||
+                         child_stats.pure ||
+                         (int)subset_sorted.size() < min_split_size_);
+            };
+
+        auto solve_exact_child = [&](Solver &child_solver,
+                                     std::vector<int> subset_sorted,
+                                     const SubproblemStats &child_stats) -> ExactChildResult {
+            ExactChildResult child_result;
+            if ((int)subset_sorted.size() < min_child_size_) {
+                return child_result;
+            }
+            if (!child_requires_recursion(subset_sorted, child_stats)) {
+                auto [child_objective, child_tree] = leaf_solution(child_stats);
+                child_result.valid = static_cast<bool>(child_tree);
+                child_result.objective = child_objective;
+                child_result.tree = std::move(child_tree);
+                return child_result;
+            }
+            recurse_attempt_count.fetch_add(1U, std::memory_order_relaxed);
+            GreedyResult child = child_solver.solve_subproblem(
+                std::move(subset_sorted),
+                child_stats,
+                depth_remaining - 1);
+            child_result.valid = static_cast<bool>(child.tree);
+            child_result.objective = child.objective;
+            child_result.tree = std::move(child.tree);
+            return child_result;
+        };
+
         auto evaluate_exact_nominee = [&](Solver &eval_solver,
                                           NomineeEval eval,
                                           double incumbent_limit,
@@ -1193,32 +1388,63 @@
             }
 
             processed_candidate_count.fetch_add(1U, std::memory_order_relaxed);
-            double objective = 0.0;
-            std::vector<std::shared_ptr<Node>> child_nodes;
-            child_nodes.reserve(eval.child_indices.size());
+            std::vector<ExactChildResult> child_results(eval.child_indices.size());
+            std::vector<size_t> recursive_children;
+            recursive_children.reserve(eval.child_indices.size());
             bool build_ok = true;
             for (size_t group_idx = 0; group_idx < eval.child_indices.size(); ++group_idx) {
-                const std::vector<int> &subset_sorted = eval.child_indices[group_idx];
-                const SubproblemStats &child_stats = eval.child_stats[group_idx];
-                if ((int)subset_sorted.size() < min_child_size_) {
+                if ((int)eval.child_indices[group_idx].size() < min_child_size_) {
                     build_ok = false;
                     break;
                 }
-                if (depth_remaining == 1 ||
-                    child_stats.pure ||
-                    (int)subset_sorted.size() < min_split_size_) {
-                    auto [child_objective, child_tree] = leaf_solution(child_stats);
-                    objective += child_objective;
-                    child_nodes.push_back(child_tree);
-                } else {
-                    recurse_attempt_count.fetch_add(1U, std::memory_order_relaxed);
-                    GreedyResult child = eval_solver.solve_subproblem(
-                        std::move(eval.child_indices[group_idx]),
-                        child_stats,
-                        depth_remaining - 1);
-                    objective += child.objective;
-                    child_nodes.push_back(child.tree);
+                if (child_requires_recursion(
+                        eval.child_indices[group_idx],
+                        eval.child_stats[group_idx])) {
+                    recursive_children.push_back(group_idx);
+                    continue;
                 }
+                child_results[group_idx] = solve_exact_child(
+                    eval_solver,
+                    std::move(eval.child_indices[group_idx]),
+                    eval.child_stats[group_idx]);
+            }
+
+            const bool enable_parallel_children =
+                build_ok &&
+                parallel_runtime_enabled &&
+                recursive_children.size() > 1U;
+            if (enable_parallel_children) {
+                tbb::parallel_for(
+                    tbb::blocked_range<size_t>(0U, recursive_children.size()),
+                    [&](const tbb::blocked_range<size_t> &range) {
+                        for (size_t pos = range.begin(); pos != range.end(); ++pos) {
+                            const size_t group_idx = recursive_children[pos];
+                            child_results[group_idx] = solve_exact_child(
+                                acquire_parallel_solver(),
+                                std::move(eval.child_indices[group_idx]),
+                                eval.child_stats[group_idx]);
+                        }
+                    });
+            } else if (build_ok) {
+                for (size_t group_idx : recursive_children) {
+                    child_results[group_idx] = solve_exact_child(
+                        eval_solver,
+                        std::move(eval.child_indices[group_idx]),
+                        eval.child_stats[group_idx]);
+                }
+            }
+
+            double objective = 0.0;
+            std::vector<std::shared_ptr<Node>> child_nodes;
+            child_nodes.reserve(eval.child_indices.size());
+            for (size_t group_idx = 0; build_ok && group_idx < child_results.size(); ++group_idx) {
+                const ExactChildResult &child_result = child_results[group_idx];
+                if (!child_result.valid || !child_result.tree) {
+                    build_ok = false;
+                    break;
+                }
+                objective += child_result.objective;
+                child_nodes.push_back(child_result.tree);
                 const double running_limit = shared_best != nullptr
                     ? shared_best->load(std::memory_order_relaxed)
                     : incumbent_limit;
@@ -1253,57 +1479,35 @@
             return result;
         };
 
+        auto consider_exact_result = [&](size_t idx, const ExactNomineeResult &result) {
+            if (!result.valid || !result.tree) {
+                return;
+            }
+            if (!best_exact_tree || result.objective + kEpsUpdate < best_exact_objective ||
+                (best_exact_idx < nominee_evals.size() &&
+                 std::abs(result.objective - best_exact_objective) <= kEpsUpdate &&
+                 nominee_prefer(idx, best_exact_idx))) {
+                best_exact_objective = result.objective;
+                best_exact_tree = result.tree;
+                best_exact_idx = idx;
+                ++incumbent_update_count;
+            }
+        };
+
         if (exact_mode) {
             const size_t exactify_limit = std::min(exactify_budget_count, alive_indices.size());
             const bool enable_parallel_exactify =
-                worker_limit_ > 1 &&
-                exactify_limit > 1U &&
-                !profiling_enabled_ &&
-                !diagnostics_enabled_;
+                parallel_runtime_enabled &&
+                exactify_limit > 1U;
             if (enable_parallel_exactify) {
                 std::vector<ExactNomineeResult> parallel_results(exactify_limit);
                 std::atomic<double> shared_best(best_exact_objective);
-                auto acquire_worker_solver = [&]() -> Solver & {
-                    struct CachedClone {
-                        std::uint64_t owner_instance_id = 0;
-                        std::unique_ptr<Solver> solver;
-                    };
-                    static thread_local CachedClone cached_clone;
-                    if (cached_clone.owner_instance_id != solver_instance_id_ || !cached_clone.solver) {
-                        cached_clone.owner_instance_id = solver_instance_id_;
-                        cached_clone.solver = std::make_unique<Solver>(
-                            x_flat_,
-                            n_rows_,
-                            n_features_,
-                            y_,
-                            sample_weight_raw_,
-                            teacher_logit_raw_,
-                            teacher_class_count_,
-                            teacher_boundary_gain_raw_,
-                            teacher_boundary_cover_raw_,
-                            teacher_boundary_value_jump_raw_,
-                            teacher_boundary_cols_,
-                            full_depth_budget_,
-                            lookahead_depth_,
-                            regularization_,
-                            min_split_size_,
-                            min_child_size_,
-                            time_limit_seconds_,
-                            max_branching_,
-                            exactify_top_k_,
-                            1);
-                        cached_clone.solver->shared_cache_bundle_ = shared_cache_bundle_;
-                        cached_clone.solver->start_time_ = start_time_;
-                        register_parallel_clone(cached_clone.solver.get());
-                    }
-                    return *cached_clone.solver;
-                };
                 tbb::task_arena arena(worker_limit_);
                 arena.execute([&]() {
                     tbb::parallel_for(
                         tbb::blocked_range<size_t>(0U, exactify_limit),
                         [&](const tbb::blocked_range<size_t> &range) {
-                            Solver &worker_solver = acquire_worker_solver();
+                            Solver &worker_solver = acquire_parallel_solver();
                             for (size_t order = range.begin(); order != range.end(); ++order) {
                                 const size_t idx = alive_indices[order];
                                 parallel_results[order] = evaluate_exact_nominee(
@@ -1316,35 +1520,24 @@
                 });
                 for (size_t order = 0; order < exactify_limit; ++order) {
                     const size_t idx = alive_indices[order];
-                    const ExactNomineeResult &result = parallel_results[order];
-                    if (result.valid && result.tree &&
-                        (!best_exact_tree || result.objective + kEpsUpdate < best_exact_objective ||
-                         (best_exact_idx < nominee_evals.size() &&
-                          std::abs(result.objective - best_exact_objective) <= kEpsUpdate &&
-                          nominee_prefer(idx, best_exact_idx)))) {
-                        best_exact_objective = result.objective;
-                        best_exact_tree = result.tree;
-                        best_exact_idx = idx;
-                        ++incumbent_update_count;
-                    }
+                    consider_exact_result(idx, parallel_results[order]);
                 }
             } else {
-                for (size_t order = 0; order < exactify_limit; ++order) {
-                    const size_t idx = alive_indices[order];
-                    const ExactNomineeResult result = evaluate_exact_nominee(
-                        *this,
-                        nominee_evals[idx],
-                        best_exact_objective);
-                    if (result.valid && result.tree &&
-                        (!best_exact_tree || result.objective + kEpsUpdate < best_exact_objective ||
-                         (best_exact_idx < nominee_evals.size() &&
-                          std::abs(result.objective - best_exact_objective) <= kEpsUpdate &&
-                          nominee_prefer(idx, best_exact_idx)))) {
-                        best_exact_objective = result.objective;
-                        best_exact_tree = result.tree;
-                        best_exact_idx = idx;
-                        ++incumbent_update_count;
+                auto run_serial_exactify = [&]() {
+                    for (size_t order = 0; order < exactify_limit; ++order) {
+                        const size_t idx = alive_indices[order];
+                        const ExactNomineeResult result = evaluate_exact_nominee(
+                            *this,
+                            nominee_evals[idx],
+                            best_exact_objective);
+                        consider_exact_result(idx, result);
                     }
+                };
+                if (parallel_runtime_enabled) {
+                    tbb::task_arena arena(worker_limit_);
+                    arena.execute(run_serial_exactify);
+                } else {
+                    run_serial_exactify();
                 }
             }
         } else {
