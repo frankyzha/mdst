@@ -198,7 +198,7 @@
     }
 
     double atomized_active_impurity_objective(const AtomizedScore &score) const {
-        return score.hard_impurity + atomized_soft_impurity_weight() * score.soft_impurity;
+        return score.hard_impurity + score.soft_impurity;
     }
 
     static bool atom_is_empirically_pure(const AtomizedAtom &atom) {
@@ -1055,11 +1055,22 @@
             }
 
             if (binary_mode_) {
+                const double mix = atomized_soft_impurity_weight();
+                atom.teacher_pos_weight =
+                    (1.0 - mix) * atom.pos_weight + mix * atom.teacher_pos_weight;
+                atom.teacher_neg_weight =
+                    (1.0 - mix) * atom.neg_weight + mix * atom.teacher_neg_weight;
                 const double teacher_total = atom.teacher_pos_weight + atom.teacher_neg_weight;
                 atom.teacher_prob = (teacher_total > kEpsUpdate) ? (atom.teacher_pos_weight / teacher_total) : 0.5;
                 atom.empirical_prediction = (atom.pos_weight >= atom.neg_weight) ? 1 : 0;
                 atom.teacher_prediction = (atom.teacher_prob >= 0.5) ? 1 : 0;
             } else {
+                const double mix = atomized_soft_impurity_weight();
+                for (int cls = 0; cls < n_classes_; ++cls) {
+                    atom.teacher_class_weight[(size_t)cls] =
+                        (1.0 - mix) * atom.class_weight[(size_t)cls] +
+                        mix * atom.teacher_class_weight[(size_t)cls];
+                }
                 atom.empirical_prediction = argmax_index(atom.class_weight);
                 atom.teacher_prediction = argmax_index(atom.teacher_class_weight);
             }

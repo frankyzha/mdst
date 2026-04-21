@@ -169,3 +169,12 @@ def test_nonlinear_impurity_weight_is_solver_state_not_env_switch():
     assert "MSPLIT_IMPURITY_METRIC" not in text
     assert "MSPLIT_SOFT_IMPURITY_WEIGHT" not in text
     assert "soft_impurity_weight_" in texts["core"]
+
+
+def test_nonlinear_support_uses_accuracy_mixed_advisory_posterior():
+    support = _current_solver_source_text()["support"]
+
+    assert "return score.hard_impurity + score.soft_impurity;" in support
+    assert "(1.0 - mix) * atom.pos_weight + mix * atom.teacher_pos_weight" in support
+    assert "(1.0 - mix) * atom.neg_weight + mix * atom.teacher_neg_weight" in support
+    assert "(1.0 - mix) * atom.class_weight[(size_t)cls] +" in support
