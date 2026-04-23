@@ -980,14 +980,36 @@
             eval.child_indices.reserve(group_bin_positions.size());
             eval.child_stats.reserve(group_bin_positions.size());
             eval.group_spans.reserve(group_bin_positions.size());
+            std::vector<std::vector<int>> child_indices(group_bin_positions.size());
+            const int max_bin = feature_bin_max_[static_cast<size_t>(eval.feature)];
+            std::vector<int> bin_to_group(
+                static_cast<size_t>(std::max(0, max_bin)) + 1U,
+                -1);
+            for (size_t atom_pos = 0; atom_pos < prepared.bins.values.size() &&
+                                     atom_pos < eval.candidate.partition.size();
+                 ++atom_pos) {
+                const int bin_value = prepared.bins.values[atom_pos];
+                if (bin_value >= 0 && bin_value <= max_bin) {
+                    bin_to_group[static_cast<size_t>(bin_value)] =
+                        eval.candidate.partition[atom_pos];
+                }
+            }
+            for (int idx : indices) {
+                const int bin_value = x(idx, eval.feature);
+                if (bin_value < 0 || bin_value > max_bin) {
+                    return false;
+                }
+                const int group_idx = bin_to_group[static_cast<size_t>(bin_value)];
+                if (group_idx < 0 || group_idx >= static_cast<int>(child_indices.size())) {
+                    return false;
+                }
+                child_indices[static_cast<size_t>(group_idx)].push_back(idx);
+            }
             double lower_bound = 0.0;
             double upper_bound = 0.0;
-            for (const auto &group_positions : group_bin_positions) {
-                std::vector<int> subset_sorted;
-                gather_group_members_sorted(
-                    prepared.bins,
-                    group_positions,
-                    subset_sorted);
+            for (size_t group_idx = 0; group_idx < group_bin_positions.size(); ++group_idx) {
+                const auto &group_positions = group_bin_positions[group_idx];
+                std::vector<int> &subset_sorted = child_indices[group_idx];
                 if ((int)subset_sorted.size() < min_child_size_) {
                     eval.child_indices.clear();
                     eval.child_stats.clear();

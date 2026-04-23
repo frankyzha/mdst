@@ -1632,14 +1632,11 @@
         PreparedFeatureAtomized &prepared
     ) const {
         prepared = PreparedFeatureAtomized{};
-        if (!build_ordered_bins(indices, feature, prepared.bins)) {
-            return false;
-        }
-        if (!build_atomized_bins(
+        if (!build_ordered_bins_and_atoms_gini(
+                indices,
+                feature,
                 prepared.bins,
-                prepared.atoms,
-                &prepared.atom_hard_floor,
-                &prepared.atom_imp_floor)) {
+                prepared.atoms)) {
             return false;
         }
 
@@ -1648,7 +1645,7 @@
         if (prepared.q_effective < 2) {
             return false;
         }
-        prepared.atom_prefix = build_atomized_prefixes(prepared.atoms);
+        prepared.atom_prefix = build_atomized_prefixes_gini(prepared.atoms);
         prepared.atom_adjacency_bonus.clear();
         prepared.atom_adjacency_bonus_total = 0.0;
         if (prepared.atoms.size() > 1U) {
@@ -1666,17 +1663,17 @@
         const AtomizedCompressionRule compression_rule = atomized_compression_rule();
         prepared.has_block_compression = has_pure_same_class_block_compression(prepared.atoms);
         if (prepared.has_block_compression) {
-            build_atomized_blocks_and_bins(
+            (void)compression_rule;
+            build_atomized_blocks_and_bins_pure_same_class_gini(
                 prepared.atoms,
                 prepared.blocks,
-                prepared.block_atoms,
-                compression_rule);
+                prepared.block_atoms);
         }
         if (prepared.has_block_compression) {
             prepared.has_block_compression = prepared.block_atoms.size() < prepared.atoms.size();
         }
         if (prepared.has_block_compression) {
-            prepared.block_prefix = build_atomized_prefixes(prepared.block_atoms);
+            prepared.block_prefix = AtomizedPrefixes{};
         } else {
             prepared.blocks.clear();
             prepared.block_atoms.clear();

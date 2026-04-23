@@ -1076,6 +1076,127 @@
         return atoms.size() > 1U;
     }
 
+    bool build_ordered_bins_and_atoms_gini(
+        const std::vector<int> &indices,
+        int feature,
+        OrderedBins &bins,
+        std::vector<AtomizedBin> &atoms
+    ) const {
+        struct OrderedBinAggregateScratch {
+            std::vector<int> stamp;
+            int stamp_token = 0;
+            std::vector<int> row_count;
+            std::vector<double> pos;
+            std::vector<double> neg;
+            std::vector<double> class_weight;
+            std::vector<int> touched;
+        };
+        static thread_local OrderedBinAggregateScratch scratch;
+
+        bins.values.clear();
+        bins.members.clear();
+        atoms.clear();
+
+        if (feature < 0 || feature >= n_features_) {
+            return false;
+        }
+        const int max_bin = feature_bin_max_[static_cast<size_t>(feature)];
+        if (max_bin < 0) {
+            return false;
+        }
+
+        const size_t dense_size = static_cast<size_t>(max_bin) + 1U;
+        if (scratch.stamp.size() < dense_size) {
+            scratch.stamp.resize(dense_size, 0);
+            scratch.row_count.resize(dense_size, 0);
+            scratch.pos.resize(dense_size, 0.0);
+            scratch.neg.resize(dense_size, 0.0);
+        }
+        if (!binary_mode_) {
+            const size_t class_width = dense_size * static_cast<size_t>(n_classes_);
+            if (scratch.class_weight.size() < class_width) {
+                scratch.class_weight.resize(class_width, 0.0);
+            }
+        }
+
+        ++scratch.stamp_token;
+        if (scratch.stamp_token == std::numeric_limits<int>::max()) {
+            std::fill(scratch.stamp.begin(), scratch.stamp.end(), 0);
+            scratch.stamp_token = 1;
+        }
+        const int stamp = scratch.stamp_token;
+
+        scratch.touched.clear();
+        scratch.touched.reserve(std::min(indices.size(), dense_size));
+
+        for (int idx : indices) {
+            const int bin = x(idx, feature);
+            const size_t bin_pos = static_cast<size_t>(bin);
+            if (scratch.stamp[bin_pos] != stamp) {
+                scratch.stamp[bin_pos] = stamp;
+                scratch.row_count[bin_pos] = 0;
+                scratch.pos[bin_pos] = 0.0;
+                scratch.neg[bin_pos] = 0.0;
+                if (!binary_mode_) {
+                    const size_t base = bin_pos * static_cast<size_t>(n_classes_);
+                    std::fill_n(
+                        scratch.class_weight.begin() + static_cast<std::ptrdiff_t>(base),
+                        n_classes_,
+                        0.0);
+                }
+                scratch.touched.push_back(bin);
+            }
+            ++scratch.row_count[bin_pos];
+            const double weight = sample_weight_uniform_
+                ? uniform_sample_weight_
+                : sample_weight_[static_cast<size_t>(idx)];
+            const int label = y_[static_cast<size_t>(idx)];
+            if (binary_mode_) {
+                if (label == 1) {
+                    scratch.pos[bin_pos] += weight;
+                } else {
+                    scratch.neg[bin_pos] += weight;
+                }
+            } else {
+                const size_t base = bin_pos * static_cast<size_t>(n_classes_);
+                scratch.class_weight[base + static_cast<size_t>(label)] += weight;
+            }
+        }
+
+        if (scratch.touched.size() <= 1U) {
+            return false;
+        }
+
+        std::sort(scratch.touched.begin(), scratch.touched.end());
+        bins.values.reserve(scratch.touched.size());
+        atoms.reserve(scratch.touched.size());
+        for (size_t ordered_pos = 0; ordered_pos < scratch.touched.size(); ++ordered_pos) {
+            const int bin = scratch.touched[ordered_pos];
+            const size_t bin_pos = static_cast<size_t>(bin);
+            bins.values.push_back(bin);
+
+            AtomizedBin atom;
+            atom.bin_pos = static_cast<int>(ordered_pos);
+            atom.bin_value = bin;
+            atom.row_count = scratch.row_count[bin_pos];
+            atom.pos_weight = scratch.pos[bin_pos];
+            atom.neg_weight = scratch.neg[bin_pos];
+            if (binary_mode_) {
+                atom.empirical_prediction = (atom.pos_weight >= atom.neg_weight) ? 1 : 0;
+            } else {
+                const size_t base = bin_pos * static_cast<size_t>(n_classes_);
+                atom.class_weight.assign(static_cast<size_t>(n_classes_), 0.0);
+                for (int cls = 0; cls < n_classes_; ++cls) {
+                    atom.class_weight[static_cast<size_t>(cls)] =
+                        scratch.class_weight[base + static_cast<size_t>(cls)];
+                }
+                atom.empirical_prediction = argmax_index(atom.class_weight);
+            }
+            atoms.push_back(std::move(atom));
+        }
+        return atoms.size() > 1U;
+    }
+
     static void append_block_bin(
         const AtomizedBlock &block,
         int block_idx,
@@ -1248,6 +1369,61 @@
         blocks.push_back(std::move(current));
     }
 
+    void build_atomized_blocks_and_bins_pure_same_class_gini(
+        const std::vector<AtomizedBin> &atoms,
+        std::vector<AtomizedBlock> &blocks,
+        std::vector<AtomizedBin> &block_atoms
+    ) const {
+        blocks.clear();
+        block_atoms.clear();
+        if (atoms.empty()) {
+            return;
+        }
+
+        blocks.reserve(atoms.size());
+        block_atoms.reserve(atoms.size());
+
+        auto start_block = [&](const AtomizedBin &atom) {
+            AtomizedBlock block;
+            block.bin_positions.push_back(atom.bin_pos);
+            block.row_count = atom.row_count;
+            block.pos_weight = atom.pos_weight;
+            block.neg_weight = atom.neg_weight;
+            block.empirical_prediction = atom.empirical_prediction;
+            block.class_weight = atom.class_weight;
+            return block;
+        };
+
+        AtomizedBlock current = start_block(atoms.front());
+        for (size_t i = 1; i < atoms.size(); ++i) {
+            const bool merge =
+                bin_is_empirically_pure(atoms[i - 1]) &&
+                bin_is_empirically_pure(atoms[i]) &&
+                atoms[i - 1].empirical_prediction == atoms[i].empirical_prediction;
+            if (!merge) {
+                append_block_bin(current, static_cast<int>(blocks.size()), block_atoms);
+                blocks.push_back(std::move(current));
+                current = start_block(atoms[i]);
+                continue;
+            }
+            current.bin_positions.push_back(atoms[i].bin_pos);
+            current.row_count += atoms[i].row_count;
+            current.pos_weight += atoms[i].pos_weight;
+            current.neg_weight += atoms[i].neg_weight;
+            if (!atoms[i].class_weight.empty()) {
+                if (current.class_weight.empty()) {
+                    current.class_weight.assign(atoms[i].class_weight.size(), 0.0);
+                }
+                for (size_t cls = 0; cls < atoms[i].class_weight.size(); ++cls) {
+                    current.class_weight[cls] += atoms[i].class_weight[cls];
+                }
+            }
+        }
+
+        append_block_bin(current, static_cast<int>(blocks.size()), block_atoms);
+        blocks.push_back(std::move(current));
+    }
+
     AtomizedPrefixes build_atomized_prefixes(const std::vector<AtomizedBin> &atoms) const {
         AtomizedPrefixes prefix;
         const size_t count = atoms.size();
@@ -1285,6 +1461,43 @@
                     prefix.teacher_class_weight_prefix[next_base + static_cast<size_t>(cls)] =
                         prefix.teacher_class_weight_prefix[prev_base + static_cast<size_t>(cls)] +
                         atoms[i].teacher_class_weight[(size_t)cls];
+                }
+            }
+        }
+        return prefix;
+    }
+
+    AtomizedPrefixes build_atomized_prefixes_gini(const std::vector<AtomizedBin> &atoms) const {
+        AtomizedPrefixes prefix;
+        const size_t count = atoms.size();
+        prefix.rows.assign(count + 1, 0);
+        prefix.total_weight.assign(count + 1, 0.0);
+        prefix.pos.assign(count + 1, 0.0);
+        prefix.neg.assign(count + 1, 0.0);
+        if (!binary_mode_) {
+            prefix.class_weight_prefix.assign(
+                (count + 1U) * static_cast<size_t>(n_classes_),
+                0.0);
+        }
+        for (size_t i = 0; i < count; ++i) {
+            prefix.rows[i + 1] = prefix.rows[i] + atoms[i].row_count;
+            double atom_total_weight = atoms[i].pos_weight + atoms[i].neg_weight;
+            if (!binary_mode_) {
+                atom_total_weight = 0.0;
+                for (double value : atoms[i].class_weight) {
+                    atom_total_weight += value;
+                }
+            }
+            prefix.total_weight[i + 1] = prefix.total_weight[i] + atom_total_weight;
+            prefix.pos[i + 1] = prefix.pos[i] + atoms[i].pos_weight;
+            prefix.neg[i + 1] = prefix.neg[i] + atoms[i].neg_weight;
+            if (!binary_mode_) {
+                const size_t prev_base = i * static_cast<size_t>(n_classes_);
+                const size_t next_base = (i + 1U) * static_cast<size_t>(n_classes_);
+                for (int cls = 0; cls < n_classes_; ++cls) {
+                    prefix.class_weight_prefix[next_base + static_cast<size_t>(cls)] =
+                        prefix.class_weight_prefix[prev_base + static_cast<size_t>(cls)] +
+                        atoms[i].class_weight[static_cast<size_t>(cls)];
                 }
             }
         }
