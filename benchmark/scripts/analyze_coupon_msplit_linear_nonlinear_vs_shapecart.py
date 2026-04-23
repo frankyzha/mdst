@@ -355,7 +355,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--shape-use-tao", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--linear-build-dir", type=str, default="build-linear-py")
     parser.add_argument("--nonlinear-build-dir", type=str, default="build-nonlinear-py")
-    parser.add_argument("--compression-rule", type=str, default=None)
     parser.add_argument("--family-mode", type=str, default=None)
     parser.add_argument("--results-root", type=Path, default=BENCHMARK_ARTIFACTS_ROOT / "coupon_gap_analysis")
     parser.add_argument("--run-name", type=str, default="current_coupon_gap")
@@ -390,7 +389,6 @@ def main() -> int:
         "shape_use_tao": bool(args.shape_use_tao),
         "linear_build_dir": str(args.linear_build_dir),
         "nonlinear_build_dir": str(args.nonlinear_build_dir),
-        "compression_rule": args.compression_rule,
         "family_mode": args.family_mode,
     }
     (out_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
@@ -427,8 +425,6 @@ def main() -> int:
     }
 
     extra_env: dict[str, str] = {}
-    if args.compression_rule is not None:
-        extra_env["MSPLIT_ATOM_COMPRESSION_RULE"] = str(args.compression_rule)
     if args.family_mode is not None:
         extra_env["MSPLIT_ATOM_FAMILY_MODE"] = str(args.family_mode)
 

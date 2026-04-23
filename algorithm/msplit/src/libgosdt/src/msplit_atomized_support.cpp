@@ -1,5 +1,14 @@
-    struct AtomizedAtom {
-        int atom_pos = -1;
+    // Terminology note for the nonlinear 1-D split search:
+    // - "AtomizedBin" is one local feature bin in the node-restricted search order.
+    // - "AtomizedBlock" is a contiguous run of adjacent bins merged by the
+    //   compression rule.
+    // - "partition" in the candidate structs is the feature-wise multiway
+    //   partition over bins.
+    // - An "interval" is a maximal contiguous run of bins that share one
+    //   partition label, and a "subinterval" is a contiguous slice of one
+    //   such interval used by local refinement moves.
+    struct AtomizedBin {
+        int bin_pos = -1;
         int bin_value = -1;
         int row_count = 0;
         double pos_weight = 0.0;
@@ -14,7 +23,7 @@
     };
 
     struct AtomizedBlock {
-        std::vector<int> atom_positions;
+        std::vector<int> bin_positions;
         int row_count = 0;
         double pos_weight = 0.0;
         double neg_weight = 0.0;
@@ -29,6 +38,8 @@
     struct AtomizedScore {
         double hard_loss = kInfinity;
         double soft_loss = kInfinity;
+        // Active impurity metric. The soft impurity slot is retained only for
+        // compatibility with diagnostics and legacy telemetry outputs.
         double hard_impurity = kInfinity;
         double soft_impurity = kInfinity;
         double boundary_penalty = kInfinity;
@@ -41,15 +52,15 @@
         int feature = -1;
         int groups = 0;
         bool hard_loss_mode = false;
-        std::vector<int> assignment;
+        std::vector<int> partition;
     };
 
     struct AtomizedCoarseCandidate {
         AtomizedCandidate geometry_seed_candidate;
         AtomizedCandidate block_candidate;
         AtomizedCandidate candidate;
-        std::vector<int> initial_block_assignment;
-        std::vector<int> refined_block_assignment;
+        std::vector<int> initial_block_partition;
+        std::vector<int> refined_block_partition;
     };
 
     struct AtomizedCandidatePair {
@@ -59,6 +70,7 @@
 
     struct AtomizedPrefixes {
         std::vector<int> rows;
+        std::vector<double> total_weight;
         std::vector<double> pos;
         std::vector<double> neg;
         std::vector<double> teacher_pos;
@@ -71,14 +83,14 @@
         bool valid = false;
         bool has_block_compression = false;
         OrderedBins bins;
-        std::vector<AtomizedAtom> atoms;
+        std::vector<AtomizedBin> atoms;
         double atom_hard_floor = 0.0;
         double atom_imp_floor = 0.0;
         AtomizedPrefixes atom_prefix;
         std::vector<double> atom_adjacency_bonus;
         double atom_adjacency_bonus_total = 0.0;
         std::vector<AtomizedBlock> blocks;
-        std::vector<AtomizedAtom> block_atoms;
+        std::vector<AtomizedBin> block_atoms;
         AtomizedPrefixes block_prefix;
         std::vector<AtomizedCoarseCandidate> coarse_by_groups;
         std::vector<AtomizedCoarseCandidate> coarse_by_groups_hardloss;
@@ -164,33 +176,10 @@
     };
 
     AtomizedCompressionRule atomized_compression_rule() const {
-        const char *raw = std::getenv("MSPLIT_ATOM_COMPRESSION_RULE");
-        if (raw == nullptr || raw[0] == '\0') {
-            return AtomizedCompressionRule::kPureSameClass;
-        }
-        const std::string value(raw);
-        if (value == "current") {
-            return AtomizedCompressionRule::kCurrent;
-        }
-        if (value == "pure" || value == "pure_same_class") {
-            return AtomizedCompressionRule::kPureSameClass;
-        }
-        if (value == "proportional" || value == "proportional_profile") {
-            return AtomizedCompressionRule::kProportionalProfile;
-        }
-        if (value == "bic" || value == "mdl" || value == "bic_mdl") {
-            return AtomizedCompressionRule::kBic;
-        }
-        if (value == "confidence" || value == "confidence_overlap") {
-            return AtomizedCompressionRule::kConfidenceOverlap;
-        }
-        if (value == "plateau" || value == "plateau_denoise" || value == "global_plateau") {
-            return AtomizedCompressionRule::kPlateau;
-        }
-        if (value == "none" || value == "raw") {
-            return AtomizedCompressionRule::kNone;
-        }
-        return AtomizedCompressionRule::kCurrent;
+        // Nonlinear MSPLIT now always uses pure-same-class block compression.
+        // Keeping this helper centralizes the policy while removing the old
+        // runtime toggle that used to route through MSPLIT_ATOM_COMPRESSION_RULE.
+        return AtomizedCompressionRule::kPureSameClass;
     }
 
     double atomized_soft_impurity_weight() const {
@@ -198,10 +187,11 @@
     }
 
     double atomized_active_impurity_objective(const AtomizedScore &score) const {
-        return score.hard_impurity + score.soft_impurity;
+        // Gini impurity is the default active impurity family.
+        return score.hard_impurity;
     }
 
-    static bool atom_is_empirically_pure(const AtomizedAtom &atom) {
+    static bool bin_is_empirically_pure(const AtomizedBin &atom) {
         if (!atom.class_weight.empty()) {
             double total = 0.0;
             double best = 0.0;
@@ -370,9 +360,9 @@
         return 0.5 * tv;
     }
 
-    static bool atomized_atoms_should_merge(
-        const AtomizedAtom &left,
-        const AtomizedAtom &right,
+    static bool atomized_bins_should_merge(
+        const AtomizedBin &left,
+        const AtomizedBin &right,
         AtomizedCompressionRule rule
     ) {
         switch (rule) {
@@ -380,8 +370,8 @@
                 return left.teacher_prediction == right.teacher_prediction &&
                     left.empirical_prediction == right.empirical_prediction;
             case AtomizedCompressionRule::kPureSameClass:
-                return atom_is_empirically_pure(left) &&
-                    atom_is_empirically_pure(right) &&
+                return bin_is_empirically_pure(left) &&
+                    bin_is_empirically_pure(right) &&
                     left.empirical_prediction == right.empirical_prediction;
             case AtomizedCompressionRule::kProportionalProfile:
                 if (!left.class_weight.empty() && !right.class_weight.empty()) {
@@ -464,9 +454,9 @@
         return out;
     }
 
-    AtomizedBlock atomized_block_from_atom(const AtomizedAtom &atom) const {
+    AtomizedBlock atomized_block_from_bin(const AtomizedBin &atom) const {
         AtomizedBlock block;
-        block.atom_positions.push_back(atom.atom_pos);
+        block.bin_positions.push_back(atom.bin_pos);
         block.row_count = atom.row_count;
         block.pos_weight = atom.pos_weight;
         block.neg_weight = atom.neg_weight;
@@ -491,15 +481,15 @@
 
     AtomizedBlock atomized_merge_blocks(const AtomizedBlock &left, const AtomizedBlock &right) const {
         AtomizedBlock merged;
-        merged.atom_positions.reserve(left.atom_positions.size() + right.atom_positions.size());
-        merged.atom_positions.insert(
-            merged.atom_positions.end(),
-            left.atom_positions.begin(),
-            left.atom_positions.end());
-        merged.atom_positions.insert(
-            merged.atom_positions.end(),
-            right.atom_positions.begin(),
-            right.atom_positions.end());
+        merged.bin_positions.reserve(left.bin_positions.size() + right.bin_positions.size());
+        merged.bin_positions.insert(
+            merged.bin_positions.end(),
+            left.bin_positions.begin(),
+            left.bin_positions.end());
+        merged.bin_positions.insert(
+            merged.bin_positions.end(),
+            right.bin_positions.begin(),
+            right.bin_positions.end());
         merged.row_count = left.row_count + right.row_count;
         merged.pos_weight = left.pos_weight + right.pos_weight;
         merged.neg_weight = left.neg_weight + right.neg_weight;
@@ -549,7 +539,7 @@
     }
 
     double atomized_joint_impurity(const AtomizedScore &score) const {
-        return score.hard_impurity + score.soft_impurity;
+        return atomized_active_impurity_objective(score);
     }
 
     double atomized_primary_objective(
@@ -695,8 +685,8 @@
         if (lhs_feature != rhs_feature) {
             return lhs_feature < rhs_feature;
         }
-        if (lhs.assignment != rhs.assignment) {
-            return lhs.assignment < rhs.assignment;
+        if (lhs.partition != rhs.partition) {
+            return lhs.partition < rhs.partition;
         }
         return false;
     }
@@ -770,38 +760,38 @@
         if (lhs_feature != rhs_feature) {
             return lhs_feature < rhs_feature;
         }
-        if (lhs.assignment != rhs.assignment) {
-            return lhs.assignment < rhs.assignment;
+        if (lhs.partition != rhs.partition) {
+            return lhs.partition < rhs.partition;
         }
         return false;
     }
 
-    static bool atomized_assignment_equivalent(
+    static bool atomized_partition_equivalent(
         const AtomizedCandidate &lhs,
         const AtomizedCandidate &rhs
     ) {
         if (!lhs.feasible || !rhs.feasible) {
             return false;
         }
-        if (lhs.assignment.size() != rhs.assignment.size()) {
+        if (lhs.partition.size() != rhs.partition.size()) {
             return false;
         }
-        if (lhs.assignment == rhs.assignment) {
+        if (lhs.partition == rhs.partition) {
             return true;
         }
         std::vector<int> lhs_to_rhs;
         std::vector<int> rhs_to_lhs;
         int lhs_groups = 0;
         int rhs_groups = 0;
-        for (size_t i = 0; i < lhs.assignment.size(); ++i) {
-            lhs_groups = std::max(lhs_groups, lhs.assignment[i] + 1);
-            rhs_groups = std::max(rhs_groups, rhs.assignment[i] + 1);
+        for (size_t i = 0; i < lhs.partition.size(); ++i) {
+            lhs_groups = std::max(lhs_groups, lhs.partition[i] + 1);
+            rhs_groups = std::max(rhs_groups, rhs.partition[i] + 1);
         }
         lhs_to_rhs.assign((size_t)lhs_groups, -1);
         rhs_to_lhs.assign((size_t)rhs_groups, -1);
-        for (size_t i = 0; i < lhs.assignment.size(); ++i) {
-            const int lhs_group = lhs.assignment[i];
-            const int rhs_group = rhs.assignment[i];
+        for (size_t i = 0; i < lhs.partition.size(); ++i) {
+            const int lhs_group = lhs.partition[i];
+            const int rhs_group = rhs.partition[i];
             if (lhs_group < 0 || rhs_group < 0) {
                 return false;
             }
@@ -916,7 +906,7 @@
         }
 
         record_family_compare_stats(impurity, misclassification);
-        if (atomized_assignment_equivalent(impurity, misclassification)) {
+        if (atomized_partition_equivalent(impurity, misclassification)) {
             if (diagnostics) {
                 ++telemetry.family_compare_equivalent;
                 ++telemetry.family1_selected_by_equivalence;
@@ -965,8 +955,8 @@
 
     double noncontiguous_boundary_penalty(
         int feature,
-        const AtomizedAtom &left,
-        const AtomizedAtom &right
+        const AtomizedBin &left,
+        const AtomizedBin &right
     ) const {
         const int gap_width = right.bin_value - left.bin_value;
         if (gap_width <= 0) {
@@ -979,8 +969,8 @@
 
     double contiguous_boundary_bonus(
         int feature,
-        const AtomizedAtom &left,
-        const AtomizedAtom &right
+        const AtomizedBin &left,
+        const AtomizedBin &right
     ) const {
         if (feature < 0) {
             return 0.0;
@@ -988,9 +978,9 @@
         return noncontiguous_boundary_penalty(feature, left, right);
     }
 
-    bool build_atomized_atoms(
+    bool build_atomized_bins(
         const OrderedBins &bins,
-        std::vector<AtomizedAtom> &atoms,
+        std::vector<AtomizedBin> &atoms,
         double *hard_floor_out = nullptr,
         double *imp_floor_out = nullptr
     ) const {
@@ -1002,34 +992,29 @@
         atoms.reserve(bins.values.size());
         double hard_floor = 0.0;
         double imp_floor = 0.0;
-        for (size_t atom_pos = 0; atom_pos < bins.values.size(); ++atom_pos) {
-            AtomizedAtom atom;
-            atom.atom_pos = (int)atom_pos;
-            atom.bin_value = bins.values[atom_pos];
-            atom.row_count = (int)bins.members[atom_pos].size();
+        for (size_t bin_pos = 0; bin_pos < bins.values.size(); ++bin_pos) {
+            AtomizedBin atom;
+            atom.bin_pos = (int)bin_pos;
+            atom.bin_value = bins.values[bin_pos];
+            atom.row_count = (int)bins.members[bin_pos].size();
             if (!binary_mode_) {
                 atom.class_weight.assign((size_t)n_classes_, 0.0);
                 atom.teacher_class_weight.assign((size_t)n_classes_, 0.0);
             }
 
             if (binary_mode_ && sample_weight_uniform_) {
-                double teacher_pos_sum = 0.0;
-                for (int idx : bins.members[atom_pos]) {
+                for (int idx : bins.members[bin_pos]) {
                     const int label = y_[(size_t)idx];
                     if (label == 1) {
                         atom.pos_weight += 1.0;
                     } else {
                         atom.neg_weight += 1.0;
                     }
-                    teacher_pos_sum += teacher_prob_[(size_t)idx];
                 }
                 atom.pos_weight *= uniform_sample_weight_;
                 atom.neg_weight *= uniform_sample_weight_;
-                atom.teacher_pos_weight = teacher_pos_sum * uniform_sample_weight_;
-                atom.teacher_neg_weight =
-                    (static_cast<double>(atom.row_count) - teacher_pos_sum) * uniform_sample_weight_;
             } else {
-                for (int idx : bins.members[atom_pos]) {
+                for (int idx : bins.members[bin_pos]) {
                     const double w = sample_weight_[(size_t)idx];
                     const int label = y_[(size_t)idx];
                     if (binary_mode_ && label == 1) {
@@ -1039,52 +1024,27 @@
                     } else {
                         atom.class_weight[(size_t)label] += w;
                     }
-                    if (binary_mode_) {
-                        const double teacher_prob = teacher_prob_[(size_t)idx];
-                        atom.teacher_pos_weight += w * teacher_prob;
-                        atom.teacher_neg_weight += w * (1.0 - teacher_prob);
-                    } else {
-                        const size_t teacher_base =
-                            static_cast<size_t>(idx) * static_cast<size_t>(n_classes_);
-                        for (int cls = 0; cls < n_classes_; ++cls) {
-                            atom.teacher_class_weight[(size_t)cls] +=
-                                w * teacher_prob_flat_[teacher_base + static_cast<size_t>(cls)];
-                        }
-                    }
                 }
             }
 
             if (binary_mode_) {
-                const double mix = atomized_soft_impurity_weight();
-                atom.teacher_pos_weight =
-                    (1.0 - mix) * atom.pos_weight + mix * atom.teacher_pos_weight;
-                atom.teacher_neg_weight =
-                    (1.0 - mix) * atom.neg_weight + mix * atom.teacher_neg_weight;
+                atom.teacher_pos_weight = atom.pos_weight;
+                atom.teacher_neg_weight = atom.neg_weight;
                 const double teacher_total = atom.teacher_pos_weight + atom.teacher_neg_weight;
                 atom.teacher_prob = (teacher_total > kEpsUpdate) ? (atom.teacher_pos_weight / teacher_total) : 0.5;
                 atom.empirical_prediction = (atom.pos_weight >= atom.neg_weight) ? 1 : 0;
-                atom.teacher_prediction = (atom.teacher_prob >= 0.5) ? 1 : 0;
+                atom.teacher_prediction = atom.empirical_prediction;
             } else {
-                const double mix = atomized_soft_impurity_weight();
-                for (int cls = 0; cls < n_classes_; ++cls) {
-                    atom.teacher_class_weight[(size_t)cls] =
-                        (1.0 - mix) * atom.class_weight[(size_t)cls] +
-                        mix * atom.teacher_class_weight[(size_t)cls];
-                }
+                atom.teacher_class_weight = atom.class_weight;
                 atom.empirical_prediction = argmax_index(atom.class_weight);
-                atom.teacher_prediction = argmax_index(atom.teacher_class_weight);
+                atom.teacher_prediction = atom.empirical_prediction;
             }
 
             if (binary_mode_) {
                 const double total = atom.pos_weight + atom.neg_weight;
                 if (total > kEpsUpdate) {
                     hard_floor += total - std::max(atom.pos_weight, atom.neg_weight);
-                    const double teacher_total = atom.teacher_pos_weight + atom.teacher_neg_weight;
-                    if (teacher_total > kEpsUpdate) {
-                        imp_floor += teacher_total - std::max(atom.teacher_pos_weight, atom.teacher_neg_weight);
-                    } else {
-                        imp_floor += total - std::max(atom.pos_weight, atom.neg_weight);
-                    }
+                    imp_floor += total - std::max(atom.pos_weight, atom.neg_weight);
                 }
             } else {
                 double total = 0.0;
@@ -1095,16 +1055,6 @@
                 }
                 if (total > kEpsUpdate) {
                     hard_floor += total - best;
-                }
-                double teacher_total = 0.0;
-                double teacher_best = 0.0;
-                for (double value : atom.teacher_class_weight) {
-                    teacher_total += value;
-                    teacher_best = std::max(teacher_best, value);
-                }
-                if (teacher_total > kEpsUpdate) {
-                    imp_floor += teacher_total - teacher_best;
-                } else if (total > kEpsUpdate) {
                     imp_floor += total - best;
                 }
             }
@@ -1119,13 +1069,13 @@
         return atoms.size() > 1U;
     }
 
-    static void append_block_atom(
+    static void append_block_bin(
         const AtomizedBlock &block,
         int block_idx,
-        std::vector<AtomizedAtom> &block_atoms
+        std::vector<AtomizedBin> &block_atoms
     ) {
-        AtomizedAtom atom;
-        atom.atom_pos = block_idx;
+        AtomizedBin atom;
+        atom.bin_pos = block_idx;
         atom.bin_value = block_idx;
         atom.row_count = block.row_count;
         atom.pos_weight = block.pos_weight;
@@ -1146,16 +1096,16 @@
     }
 
     bool has_atomized_block_compression(
-        const std::vector<AtomizedAtom> &atoms,
+        const std::vector<AtomizedBin> &atoms,
         AtomizedCompressionRule rule = AtomizedCompressionRule::kCurrent
     ) const {
         if (rule == AtomizedCompressionRule::kConfidenceOverlap) {
             if (atoms.size() <= 1U) {
                 return false;
             }
-            AtomizedBlock current = atomized_block_from_atom(atoms.front());
+            AtomizedBlock current = atomized_block_from_bin(atoms.front());
             for (size_t i = 1; i < atoms.size(); ++i) {
-                const AtomizedBlock next = atomized_block_from_atom(atoms[i]);
+                const AtomizedBlock next = atomized_block_from_bin(atoms[i]);
                 if (atomized_confidence_overlap(current, next)) {
                     return true;
                 }
@@ -1169,8 +1119,8 @@
             }
             for (size_t i = 1; i < atoms.size(); ++i) {
                 if (atomized_confidence_overlap(
-                        atomized_block_from_atom(atoms[i - 1]),
-                        atomized_block_from_atom(atoms[i]))) {
+                        atomized_block_from_bin(atoms[i - 1]),
+                        atomized_block_from_bin(atoms[i]))) {
                     return true;
                 }
             }
@@ -1184,25 +1134,25 @@
             }
             for (size_t i = 1; i < atoms.size(); ++i) {
                 if (atomized_bic_merge_preferred(
-                        atomized_block_from_atom(atoms[i - 1]),
-                        atomized_block_from_atom(atoms[i]))) {
+                        atomized_block_from_bin(atoms[i - 1]),
+                        atomized_block_from_bin(atoms[i]))) {
                     return true;
                 }
             }
             return false;
         }
         for (size_t i = 1; i < atoms.size(); ++i) {
-            if (atomized_atoms_should_merge(atoms[i - 1], atoms[i], rule)) {
+            if (atomized_bins_should_merge(atoms[i - 1], atoms[i], rule)) {
                 return true;
             }
         }
         return false;
     }
 
-    void build_atomized_blocks_and_atoms(
-        const std::vector<AtomizedAtom> &atoms,
+    void build_atomized_blocks_and_bins(
+        const std::vector<AtomizedBin> &atoms,
         std::vector<AtomizedBlock> &blocks,
-        std::vector<AtomizedAtom> &block_atoms,
+        std::vector<AtomizedBin> &block_atoms,
         AtomizedCompressionRule rule = AtomizedCompressionRule::kCurrent
     ) const {
         blocks.clear();
@@ -1214,18 +1164,18 @@
         if (rule == AtomizedCompressionRule::kConfidenceOverlap) {
             blocks.reserve(atoms.size());
             block_atoms.reserve(atoms.size());
-            AtomizedBlock current = atomized_block_from_atom(atoms.front());
+            AtomizedBlock current = atomized_block_from_bin(atoms.front());
             for (size_t i = 1; i < atoms.size(); ++i) {
-                const AtomizedBlock next = atomized_block_from_atom(atoms[i]);
+                const AtomizedBlock next = atomized_block_from_bin(atoms[i]);
                 if (atomized_confidence_overlap(current, next)) {
                     current = atomized_merge_blocks(current, next);
                     continue;
                 }
-                append_block_atom(current, static_cast<int>(blocks.size()), block_atoms);
+                append_block_bin(current, static_cast<int>(blocks.size()), block_atoms);
                 blocks.push_back(std::move(current));
                 current = next;
             }
-            append_block_atom(current, static_cast<int>(blocks.size()), block_atoms);
+            append_block_bin(current, static_cast<int>(blocks.size()), block_atoms);
             blocks.push_back(std::move(current));
             return;
         }
@@ -1233,8 +1183,8 @@
         if (rule == AtomizedCompressionRule::kPlateau) {
             std::vector<AtomizedBlock> active_blocks;
             active_blocks.reserve(atoms.size());
-            for (const AtomizedAtom &atom : atoms) {
-                active_blocks.push_back(atomized_block_from_atom(atom));
+            for (const AtomizedBin &atom : atoms) {
+                active_blocks.push_back(atomized_block_from_bin(atom));
             }
             while (active_blocks.size() > 2U) {
                 int best_idx = -1;
@@ -1262,7 +1212,7 @@
             blocks = std::move(active_blocks);
             block_atoms.reserve(blocks.size());
             for (size_t i = 0; i < blocks.size(); ++i) {
-                append_block_atom(blocks[i], static_cast<int>(i), block_atoms);
+                append_block_bin(blocks[i], static_cast<int>(i), block_atoms);
             }
             return;
         }
@@ -1270,8 +1220,8 @@
         if (rule == AtomizedCompressionRule::kBic) {
             std::vector<AtomizedBlock> active_blocks;
             active_blocks.reserve(atoms.size());
-            for (const AtomizedAtom &atom : atoms) {
-                active_blocks.push_back(atomized_block_from_atom(atom));
+            for (const AtomizedBin &atom : atoms) {
+                active_blocks.push_back(atomized_block_from_bin(atom));
             }
             while (active_blocks.size() > 2U) {
                 int best_idx = -1;
@@ -1304,7 +1254,7 @@
             blocks = std::move(active_blocks);
             block_atoms.reserve(blocks.size());
             for (size_t i = 0; i < blocks.size(); ++i) {
-                append_block_atom(blocks[i], static_cast<int>(i), block_atoms);
+                append_block_bin(blocks[i], static_cast<int>(i), block_atoms);
             }
             return;
         }
@@ -1314,14 +1264,14 @@
         AtomizedBlock current;
         for (size_t i = 0; i < atoms.size(); ++i) {
             if (i > 0) {
-                const bool same_type = atomized_atoms_should_merge(atoms[i - 1], atoms[i], rule);
+                const bool same_type = atomized_bins_should_merge(atoms[i - 1], atoms[i], rule);
                 if (!same_type) {
-                    append_block_atom(current, (int)blocks.size(), block_atoms);
+                    append_block_bin(current, (int)blocks.size(), block_atoms);
                     blocks.push_back(std::move(current));
                     current = AtomizedBlock{};
                 }
             }
-            current.atom_positions.push_back(atoms[i].atom_pos);
+            current.bin_positions.push_back(atoms[i].bin_pos);
             current.row_count += atoms[i].row_count;
             current.pos_weight += atoms[i].pos_weight;
             current.neg_weight += atoms[i].neg_weight;
@@ -1341,14 +1291,15 @@
             }
         }
 
-        append_block_atom(current, (int)blocks.size(), block_atoms);
+        append_block_bin(current, (int)blocks.size(), block_atoms);
         blocks.push_back(std::move(current));
     }
 
-    AtomizedPrefixes build_atomized_prefixes(const std::vector<AtomizedAtom> &atoms) const {
+    AtomizedPrefixes build_atomized_prefixes(const std::vector<AtomizedBin> &atoms) const {
         AtomizedPrefixes prefix;
         const size_t count = atoms.size();
         prefix.rows.assign(count + 1, 0);
+        prefix.total_weight.assign(count + 1, 0.0);
         prefix.pos.assign(count + 1, 0.0);
         prefix.neg.assign(count + 1, 0.0);
         prefix.teacher_pos.assign(count + 1, 0.0);
@@ -1359,6 +1310,14 @@
         }
         for (size_t i = 0; i < count; ++i) {
             prefix.rows[i + 1] = prefix.rows[i] + atoms[i].row_count;
+            double atom_total_weight = atoms[i].pos_weight + atoms[i].neg_weight;
+            if (!binary_mode_) {
+                atom_total_weight = 0.0;
+                for (double value : atoms[i].class_weight) {
+                    atom_total_weight += value;
+                }
+            }
+            prefix.total_weight[i + 1] = prefix.total_weight[i] + atom_total_weight;
             prefix.pos[i + 1] = prefix.pos[i] + atoms[i].pos_weight;
             prefix.neg[i + 1] = prefix.neg[i] + atoms[i].neg_weight;
             prefix.teacher_pos[i + 1] = prefix.teacher_pos[i] + atoms[i].teacher_pos_weight;
@@ -1379,48 +1338,48 @@
         return prefix;
     }
 
-    static std::vector<int> lift_block_assignment_to_atoms(
+    static std::vector<int> lift_block_partition_to_bins(
         const std::vector<AtomizedBlock> &blocks,
-        const std::vector<int> &block_assignment,
-        int atom_count
+        const std::vector<int> &block_partition,
+        int bin_count
     ) {
-        std::vector<int> atom_assignment((size_t)atom_count, -1);
-        for (size_t block_idx = 0; block_idx < blocks.size() && block_idx < block_assignment.size(); ++block_idx) {
-            const int group_idx = block_assignment[block_idx];
-            for (int atom_pos : blocks[block_idx].atom_positions) {
-                atom_assignment[(size_t)atom_pos] = group_idx;
+        std::vector<int> bin_partition((size_t)bin_count, -1);
+        for (size_t block_idx = 0; block_idx < blocks.size() && block_idx < block_partition.size(); ++block_idx) {
+            const int group_idx = block_partition[block_idx];
+            for (int bin_pos : blocks[block_idx].bin_positions) {
+                bin_partition[(size_t)bin_pos] = group_idx;
             }
         }
-        return atom_assignment;
+        return bin_partition;
     }
 
-    static bool project_atom_assignment_to_blocks(
+    static bool project_bin_partition_to_blocks(
         const std::vector<AtomizedBlock> &blocks,
-        const std::vector<AtomizedAtom> &atoms,
-        const std::vector<int> &atom_assignment,
-        std::vector<int> &block_assignment,
+        const std::vector<AtomizedBin> &atoms,
+        const std::vector<int> &bin_partition,
+        std::vector<int> &block_partition,
         std::vector<unsigned char> &mixed_block
     ) {
-        block_assignment.assign(blocks.size(), -1);
+        block_partition.assign(blocks.size(), -1);
         mixed_block.assign(blocks.size(), 0);
         for (size_t block_idx = 0; block_idx < blocks.size(); ++block_idx) {
-            const auto &positions = blocks[block_idx].atom_positions;
+            const auto &positions = blocks[block_idx].bin_positions;
             if (positions.empty()) {
                 return false;
             }
             std::unordered_map<int, int> group_rows;
             int selected_group = -1;
             int selected_rows = -1;
-            for (int atom_pos : positions) {
-                if (atom_pos < 0 || atom_pos >= (int)atom_assignment.size() ||
-                    atom_pos >= (int)atoms.size()) {
+            for (int bin_pos : positions) {
+                if (bin_pos < 0 || bin_pos >= (int)bin_partition.size() ||
+                    bin_pos >= (int)atoms.size()) {
                     return false;
                 }
-                const int group_idx = atom_assignment[(size_t)atom_pos];
+                const int group_idx = bin_partition[(size_t)bin_pos];
                 if (group_idx < 0) {
                     return false;
                 }
-                const int rows = std::max(1, atoms[(size_t)atom_pos].row_count);
+                const int rows = std::max(1, atoms[(size_t)bin_pos].row_count);
                 int &group_total = group_rows[group_idx];
                 group_total += rows;
                 if (group_total > selected_rows) {
@@ -1431,9 +1390,9 @@
             if (selected_group < 0) {
                 return false;
             }
-            block_assignment[block_idx] = selected_group;
-            for (int atom_pos : positions) {
-                if (atom_assignment[(size_t)atom_pos] != selected_group) {
+            block_partition[block_idx] = selected_group;
+            for (int bin_pos : positions) {
+                if (bin_partition[(size_t)bin_pos] != selected_group) {
                     mixed_block[block_idx] = 1;
                     break;
                 }
@@ -1502,8 +1461,8 @@
         std::vector<std::pair<int, int>> atom_windows;
         atom_windows.reserve(block_windows.size());
         for (const auto &window : block_windows) {
-            const auto &left_positions = blocks[(size_t)window.first].atom_positions;
-            const auto &right_positions = blocks[(size_t)window.second].atom_positions;
+            const auto &left_positions = blocks[(size_t)window.first].bin_positions;
+            const auto &right_positions = blocks[(size_t)window.second].bin_positions;
             if (left_positions.empty() || right_positions.empty()) {
                 continue;
             }
@@ -1512,11 +1471,11 @@
         return atom_windows;
     }
 
-    AtomizedScore score_group_assignment(
+    AtomizedScore score_partition(
         int feature,
-        const std::vector<AtomizedAtom> &atoms,
-        const std::vector<std::vector<int>> &group_atom_positions,
-        const std::vector<int> *assignment = nullptr,
+        const std::vector<AtomizedBin> &atoms,
+        const std::vector<std::vector<int>> &group_bin_positions,
+        const std::vector<int> *partition = nullptr,
         const std::vector<double> *adjacency_bonus = nullptr,
         double adjacency_bonus_total = 0.0
     ) const {
@@ -1524,80 +1483,73 @@
         double kept_adjacency_bonus = 0.0;
         const bool has_adjacency_bonus =
             adjacency_bonus != nullptr && !adjacency_bonus->empty();
-        for (const auto &group : group_atom_positions) {
+        for (const auto &group : group_bin_positions) {
             if (group.empty()) {
                 return AtomizedScore{};
             }
             int row_count = 0;
             double pos_weight = 0.0;
             double neg_weight = 0.0;
-            double teacher_pos_weight = 0.0;
-            double teacher_neg_weight = 0.0;
             std::vector<double> class_weight;
-            std::vector<double> teacher_class_weight;
             if (!binary_mode_) {
                 class_weight.assign((size_t)n_classes_, 0.0);
-                teacher_class_weight.assign((size_t)n_classes_, 0.0);
             }
             int components = 1;
             int prev_pos = group.front();
             for (size_t idx = 0; idx < group.size(); ++idx) {
-                const int atom_pos = group[idx];
-                if (idx > 0 && atom_pos != prev_pos + 1) {
+                const int bin_pos = group[idx];
+                if (idx > 0 && bin_pos != prev_pos + 1) {
                     ++components;
                     score.boundary_penalty += noncontiguous_boundary_penalty(
                         feature,
                         atoms[(size_t)prev_pos],
-                        atoms[(size_t)atom_pos]);
+                        atoms[(size_t)bin_pos]);
                 } else if (idx > 0 && has_adjacency_bonus && (size_t)prev_pos < adjacency_bonus->size()) {
                     kept_adjacency_bonus += (*adjacency_bonus)[(size_t)prev_pos];
                 }
-                const AtomizedAtom &atom = atoms[(size_t)atom_pos];
+                const AtomizedBin &atom = atoms[(size_t)bin_pos];
                 row_count += atom.row_count;
                 pos_weight += atom.pos_weight;
                 neg_weight += atom.neg_weight;
-                teacher_pos_weight += atom.teacher_pos_weight;
-                teacher_neg_weight += atom.teacher_neg_weight;
                 if (!binary_mode_) {
                     for (int cls = 0; cls < n_classes_; ++cls) {
                         class_weight[(size_t)cls] += atom.class_weight[(size_t)cls];
-                        teacher_class_weight[(size_t)cls] += atom.teacher_class_weight[(size_t)cls];
                     }
                 }
-                prev_pos = atom_pos;
+                prev_pos = bin_pos;
             }
             if (row_count < min_child_size_) {
                 return AtomizedScore{};
             }
             if (binary_mode_) {
-                score.hard_loss += split_leaf_loss(pos_weight, neg_weight);
-                score.soft_loss += split_leaf_loss(teacher_pos_weight, teacher_neg_weight);
+                const double branch_hard_loss = split_leaf_loss(pos_weight, neg_weight);
+                score.hard_loss += branch_hard_loss;
+                score.soft_loss += branch_hard_loss;
                 score.hard_impurity += hard_label_impurity(pos_weight, neg_weight);
-                score.soft_impurity += hard_label_impurity(teacher_pos_weight, teacher_neg_weight);
             } else {
-                score.hard_loss += split_leaf_loss(class_weight);
-                score.soft_loss += split_leaf_loss(teacher_class_weight);
+                const double branch_hard_loss = split_leaf_loss(class_weight);
+                score.hard_loss += branch_hard_loss;
+                score.soft_loss += branch_hard_loss;
                 score.hard_impurity += hard_label_impurity(class_weight);
-                score.soft_impurity += hard_label_impurity(teacher_class_weight);
             }
             score.components += components;
         }
         if (adjacency_bonus != nullptr) {
             score.boundary_penalty += kept_adjacency_bonus - adjacency_bonus_total;
-        } else if (feature >= 0 && assignment != nullptr) {
-            for (int atom_pos = 1; atom_pos < (int)atoms.size(); ++atom_pos) {
-                if ((*assignment)[(size_t)(atom_pos - 1)] != (*assignment)[(size_t)atom_pos]) {
+        } else if (feature >= 0 && partition != nullptr) {
+            for (int bin_pos = 1; bin_pos < (int)atoms.size(); ++bin_pos) {
+                if ((*partition)[(size_t)(bin_pos - 1)] != (*partition)[(size_t)bin_pos]) {
                     score.boundary_penalty -= contiguous_boundary_bonus(
                         feature,
-                        atoms[(size_t)(atom_pos - 1)],
-                        atoms[(size_t)atom_pos]);
+                        atoms[(size_t)(bin_pos - 1)],
+                        atoms[(size_t)bin_pos]);
                 }
             }
         }
         return score;
     }
 
-    static bool fill_groups_from_assignment(
+    static bool fill_groups_from_partition(
         const std::vector<int> &assign,
         int groups,
         std::vector<std::vector<int>> &out,
@@ -1608,8 +1560,8 @@
         for (auto &group : out) {
             group.clear();
         }
-        for (int atom_pos = 0; atom_pos < (int)assign.size(); ++atom_pos) {
-            const int group_idx = assign[(size_t)atom_pos];
+        for (int bin_pos = 0; bin_pos < (int)assign.size(); ++bin_pos) {
+            const int group_idx = assign[(size_t)bin_pos];
             if (group_idx >= 0 && group_idx < groups) {
                 ++counts[(size_t)group_idx];
             } else {
@@ -1622,14 +1574,14 @@
             }
             out[(size_t)group_idx].reserve((size_t)counts[(size_t)group_idx]);
         }
-        for (int atom_pos = 0; atom_pos < (int)assign.size(); ++atom_pos) {
-            const int group_idx = assign[(size_t)atom_pos];
-            out[(size_t)group_idx].push_back(atom_pos);
+        for (int bin_pos = 0; bin_pos < (int)assign.size(); ++bin_pos) {
+            const int group_idx = assign[(size_t)bin_pos];
+            out[(size_t)group_idx].push_back(bin_pos);
         }
         return true;
     }
 
-    static bool canonicalize_group_assignment(
+    static bool canonicalize_partition_labels(
         std::vector<int> &assign,
         int groups
     ) {
@@ -1651,9 +1603,9 @@
         return true;
     }
 
-    AtomizedCandidate candidate_from_assignment(
+    AtomizedCandidate candidate_from_partition(
         int feature,
-        const std::vector<AtomizedAtom> &atoms,
+        const std::vector<AtomizedBin> &atoms,
         const std::vector<int> &assign,
         int groups,
         const std::vector<double> *adjacency_bonus = nullptr,
@@ -1665,16 +1617,16 @@
             return out;
         }
         std::vector<int> canonical_assign = assign;
-        if (!canonicalize_group_assignment(canonical_assign, groups)) {
+        if (!canonicalize_partition_labels(canonical_assign, groups)) {
             return out;
         }
         if (binary_mode_) {
-            const int atom_count = (int)canonical_assign.size();
+            const int bin_count = (int)canonical_assign.size();
             std::vector<int> counts((size_t)groups, 0);
             const bool has_adjacency_bonus =
                 adjacency_bonus != nullptr && !adjacency_bonus->empty();
-            for (int atom_pos = 0; atom_pos < atom_count; ++atom_pos) {
-                const int group_idx = canonical_assign[(size_t)atom_pos];
+            for (int bin_pos = 0; bin_pos < bin_count; ++bin_pos) {
+                const int group_idx = canonical_assign[(size_t)bin_pos];
                 if (group_idx < 0 || group_idx >= groups) {
                     return AtomizedCandidate{};
                 }
@@ -1692,20 +1644,18 @@
             std::vector<int> group_components((size_t)groups, 0);
             std::vector<double> group_pos((size_t)groups, 0.0);
             std::vector<double> group_neg((size_t)groups, 0.0);
-            std::vector<double> group_teacher_pos((size_t)groups, 0.0);
-            std::vector<double> group_teacher_neg((size_t)groups, 0.0);
             double kept_adjacency_bonus = 0.0;
             out.score = AtomizedScore{0.0, 0.0, 0.0, 0.0, 0.0, 0};
 
-            for (int atom_pos = 0; atom_pos < atom_count; ++atom_pos) {
-                const int group_idx = canonical_assign[(size_t)atom_pos];
+            for (int bin_pos = 0; bin_pos < bin_count; ++bin_pos) {
+                const int group_idx = canonical_assign[(size_t)bin_pos];
                 const int last_pos = group_last_pos[(size_t)group_idx];
                 if (last_pos >= 0) {
-                    if (atom_pos != last_pos + 1) {
+                    if (bin_pos != last_pos + 1) {
                         out.score.boundary_penalty += noncontiguous_boundary_penalty(
                             feature,
                             atoms[(size_t)last_pos],
-                            atoms[(size_t)atom_pos]);
+                            atoms[(size_t)bin_pos]);
                         ++group_components[(size_t)group_idx];
                     } else if (has_adjacency_bonus && (size_t)last_pos < adjacency_bonus->size()) {
                         kept_adjacency_bonus += (*adjacency_bonus)[(size_t)last_pos];
@@ -1714,13 +1664,11 @@
                     group_components[(size_t)group_idx] = 1;
                 }
 
-                group_last_pos[(size_t)group_idx] = atom_pos;
-                const AtomizedAtom &atom = atoms[(size_t)atom_pos];
+                group_last_pos[(size_t)group_idx] = bin_pos;
+                const AtomizedBin &atom = atoms[(size_t)bin_pos];
                 group_rows[(size_t)group_idx] += atom.row_count;
                 group_pos[(size_t)group_idx] += atom.pos_weight;
                 group_neg[(size_t)group_idx] += atom.neg_weight;
-                group_teacher_pos[(size_t)group_idx] += atom.teacher_pos_weight;
-                group_teacher_neg[(size_t)group_idx] += atom.teacher_neg_weight;
             }
 
             for (int group_idx = 0; group_idx < groups; ++group_idx) {
@@ -1731,27 +1679,22 @@
                     group_pos[(size_t)group_idx],
                     group_neg[(size_t)group_idx]);
                 out.score.hard_loss += branch_hard_loss;
-                out.score.soft_loss += split_leaf_loss(
-                    group_teacher_pos[(size_t)group_idx],
-                    group_teacher_neg[(size_t)group_idx]);
+                out.score.soft_loss += branch_hard_loss;
                 out.score.hard_impurity += hard_label_impurity(
                     group_pos[(size_t)group_idx],
                     group_neg[(size_t)group_idx]);
-                out.score.soft_impurity += hard_label_impurity(
-                    group_teacher_pos[(size_t)group_idx],
-                    group_teacher_neg[(size_t)group_idx]);
                 out.score.components += group_components[(size_t)group_idx];
             }
 
             if (adjacency_bonus != nullptr) {
                 out.score.boundary_penalty += kept_adjacency_bonus - adjacency_bonus_total;
             } else if (feature >= 0) {
-                for (int atom_pos = 1; atom_pos < atom_count; ++atom_pos) {
-                    if (canonical_assign[(size_t)(atom_pos - 1)] != canonical_assign[(size_t)atom_pos]) {
+                for (int bin_pos = 1; bin_pos < bin_count; ++bin_pos) {
+                    if (canonical_assign[(size_t)(bin_pos - 1)] != canonical_assign[(size_t)bin_pos]) {
                         out.score.boundary_penalty -= contiguous_boundary_bonus(
                             feature,
-                            atoms[(size_t)(atom_pos - 1)],
-                            atoms[(size_t)atom_pos]);
+                            atoms[(size_t)(bin_pos - 1)],
+                            atoms[(size_t)bin_pos]);
                     }
                 }
             }
@@ -1760,18 +1703,18 @@
             out.feature = feature;
             out.groups = groups;
             out.hard_loss_mode = (objective_mode == AtomizedObjectiveMode::kHardLoss);
-            out.assignment = std::move(canonical_assign);
+            out.partition = std::move(canonical_assign);
             return out;
         }
-        std::vector<std::vector<int>> group_atom_positions;
+        std::vector<std::vector<int>> group_bin_positions;
         std::vector<int> group_counts;
-        if (!fill_groups_from_assignment(canonical_assign, groups, group_atom_positions, group_counts)) {
+        if (!fill_groups_from_partition(canonical_assign, groups, group_bin_positions, group_counts)) {
             return AtomizedCandidate{};
         }
-        out.score = score_group_assignment(
+        out.score = score_partition(
             feature,
             atoms,
-            group_atom_positions,
+            group_bin_positions,
             &canonical_assign,
             adjacency_bonus,
             adjacency_bonus_total);
@@ -1782,14 +1725,14 @@
         out.feature = feature;
         out.groups = groups;
         out.hard_loss_mode = (objective_mode == AtomizedObjectiveMode::kHardLoss);
-        out.assignment = std::move(canonical_assign);
+        out.partition = std::move(canonical_assign);
         return out;
     }
 
     AtomizedCandidate lift_block_candidate_to_atoms(
         int feature,
         const std::vector<AtomizedBlock> &blocks,
-        const std::vector<AtomizedAtom> &atoms,
+        const std::vector<AtomizedBin> &atoms,
         const AtomizedCandidate &block_candidate,
         const std::vector<double> *adjacency_bonus = nullptr,
         double adjacency_bonus_total = 0.0,
@@ -1798,12 +1741,12 @@
         if (!block_candidate.feasible) {
             return AtomizedCandidate{};
         }
-        const std::vector<int> atom_assignment =
-            lift_block_assignment_to_atoms(blocks, block_candidate.assignment, (int)atoms.size());
-        return candidate_from_assignment(
+        const std::vector<int> bin_partition =
+            lift_block_partition_to_bins(blocks, block_candidate.partition, (int)atoms.size());
+        return candidate_from_partition(
             feature,
             atoms,
-            atom_assignment,
+            bin_partition,
             block_candidate.groups,
             adjacency_bonus,
             adjacency_bonus_total,

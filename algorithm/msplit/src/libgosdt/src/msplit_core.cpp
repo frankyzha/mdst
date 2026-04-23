@@ -1637,7 +1637,7 @@ class Solver {
     }
 
     void initialize_teacher_prob() {
-        teacher_prob_.assign((size_t)n_rows_, 0.5);
+        teacher_prob_.clear();
         teacher_prob_flat_.clear();
         teacher_prediction_.assign((size_t)n_rows_, 0);
         if (teacher_logit_raw_.empty()) {
@@ -1647,40 +1647,22 @@ class Solver {
         if (teacher_class_count_ <= 1) {
             for (int row = 0; row < n_rows_; ++row) {
                 const double logit = teacher_logit_raw_[(size_t)row];
-                const double prob = std::isfinite(logit) ? sigmoid(logit) : 0.5;
-                teacher_prob_[(size_t)row] = prob;
-                teacher_prediction_[(size_t)row] = (prob >= 0.5) ? 1 : 0;
+                teacher_prediction_[(size_t)row] =
+                    (std::isfinite(logit) && logit < 0.0) ? 0 : 1;
             }
             return;
         }
         if (binary_mode_ && teacher_class_count_ == 2) {
-            teacher_prob_flat_.assign(static_cast<size_t>(n_rows_) * 2U, 0.0);
             for (int row = 0; row < n_rows_; ++row) {
                 const size_t base = static_cast<size_t>(row) * 2U;
                 const double logit0 = teacher_logit_raw_[base];
                 const double logit1 = teacher_logit_raw_[base + 1U];
-                if (!std::isfinite(logit0) && !std::isfinite(logit1)) {
-                    teacher_prob_[(size_t)row] = 0.5;
-                    teacher_prob_flat_[base] = 0.5;
-                    teacher_prob_flat_[base + 1U] = 0.5;
-                    teacher_prediction_[(size_t)row] = 1;
-                    continue;
-                }
                 const double safe0 = std::isfinite(logit0) ? logit0 : -kInfinity;
                 const double safe1 = std::isfinite(logit1) ? logit1 : -kInfinity;
-                const double max_logit = std::max(safe0, safe1);
-                const double exp0 = std::isfinite(safe0) ? std::exp(safe0 - max_logit) : 0.0;
-                const double exp1 = std::isfinite(safe1) ? std::exp(safe1 - max_logit) : 0.0;
-                const double sum_exp = exp0 + exp1;
-                const double pos_prob = (sum_exp > kEpsUpdate) ? (exp1 / sum_exp) : 0.5;
-                teacher_prob_[(size_t)row] = pos_prob;
-                teacher_prob_flat_[base] = 1.0 - pos_prob;
-                teacher_prob_flat_[base + 1U] = pos_prob;
-                teacher_prediction_[(size_t)row] = (pos_prob >= 0.5) ? 1 : 0;
+                teacher_prediction_[(size_t)row] = (safe1 >= safe0) ? 1 : 0;
             }
             return;
         }
-        teacher_prob_flat_.assign(static_cast<size_t>(n_rows_) * static_cast<size_t>(teacher_class_count_), 0.0);
         for (int row = 0; row < n_rows_; ++row) {
             const size_t base = static_cast<size_t>(row) * static_cast<size_t>(teacher_class_count_);
             double max_logit = -kInfinity;
@@ -1691,36 +1673,15 @@ class Solver {
                 }
             }
             if (!std::isfinite(max_logit)) {
-                const double uniform = 1.0 / static_cast<double>(teacher_class_count_);
-                for (int cls = 0; cls < teacher_class_count_; ++cls) {
-                    teacher_prob_flat_[base + static_cast<size_t>(cls)] = uniform;
-                }
                 teacher_prediction_[(size_t)row] = 0;
                 continue;
             }
-            double sum_exp = 0.0;
+            int best_cls = 0;
+            double best_logit = -kInfinity;
             for (int cls = 0; cls < teacher_class_count_; ++cls) {
                 const double logit = teacher_logit_raw_[base + static_cast<size_t>(cls)];
-                const double weight = std::isfinite(logit) ? std::exp(logit - max_logit) : 0.0;
-                teacher_prob_flat_[base + static_cast<size_t>(cls)] = weight;
-                sum_exp += weight;
-            }
-            if (sum_exp <= kEpsUpdate) {
-                const double uniform = 1.0 / static_cast<double>(teacher_class_count_);
-                for (int cls = 0; cls < teacher_class_count_; ++cls) {
-                    teacher_prob_flat_[base + static_cast<size_t>(cls)] = uniform;
-                }
-                teacher_prediction_[(size_t)row] = 0;
-                continue;
-            }
-            const double inv_sum = 1.0 / sum_exp;
-            int best_cls = 0;
-            double best_prob = -1.0;
-            for (int cls = 0; cls < teacher_class_count_; ++cls) {
-                const double prob = teacher_prob_flat_[base + static_cast<size_t>(cls)] * inv_sum;
-                teacher_prob_flat_[base + static_cast<size_t>(cls)] = prob;
-                if (prob > best_prob) {
-                    best_prob = prob;
+                if (std::isfinite(logit) && logit > best_logit) {
+                    best_logit = logit;
                     best_cls = cls;
                 }
             }

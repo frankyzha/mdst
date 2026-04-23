@@ -47,7 +47,7 @@
         return selected;
     }
 
-    static std::vector<std::pair<int, int>> atom_positions_to_spans(
+    static std::vector<std::pair<int, int>> bin_positions_to_spans(
         const OrderedBins &bins,
         const std::vector<int> &group_positions
     ) {
@@ -59,15 +59,15 @@
         int span_hi = span_lo;
         int prev_pos = group_positions.front();
         for (size_t i = 1; i < group_positions.size(); ++i) {
-            const int atom_pos = group_positions[i];
-            if (atom_pos == prev_pos + 1) {
-                span_hi = bins.values[(size_t)atom_pos];
+            const int bin_pos = group_positions[i];
+            if (bin_pos == prev_pos + 1) {
+                span_hi = bins.values[(size_t)bin_pos];
             } else {
                 spans.push_back({span_lo, span_hi});
-                span_lo = bins.values[(size_t)atom_pos];
+                span_lo = bins.values[(size_t)bin_pos];
                 span_hi = span_lo;
             }
-            prev_pos = atom_pos;
+            prev_pos = bin_pos;
         }
         spans.push_back({span_lo, span_hi});
         return spans;
@@ -885,7 +885,7 @@
                 node_candidate_lower_bounds.push_back(eval.lower_bound);
                 node_candidate_hard_loss.push_back(score.hard_loss);
                 node_candidate_impurity_objective.push_back(
-                    score.hard_impurity + score.soft_impurity);
+                    atomized_active_impurity_objective(score));
                 node_candidate_hard_impurity.push_back(score.hard_impurity);
                 node_candidate_soft_impurity.push_back(score.soft_impurity);
                 node_candidate_boundary_penalty.push_back(score.boundary_penalty);
@@ -962,27 +962,27 @@
                                       NomineeEval &eval,
                                       const PreparedFeatureAtomized &prepared,
                                       double incumbent_limit) -> bool {
-            std::vector<std::vector<int>> group_atom_positions;
+            std::vector<std::vector<int>> group_bin_positions;
             std::vector<int> group_counts;
-            if (!fill_groups_from_assignment(
-                    eval.candidate.assignment,
+            if (!fill_groups_from_partition(
+                    eval.candidate.partition,
                     eval.candidate.groups,
-                    group_atom_positions,
+                    group_bin_positions,
                     group_counts)) {
                 return false;
             }
-            if (group_atom_positions.empty()) {
+            if (group_bin_positions.empty()) {
                 return false;
             }
             eval.child_indices.clear();
             eval.child_stats.clear();
             eval.group_spans.clear();
-            eval.child_indices.reserve(group_atom_positions.size());
-            eval.child_stats.reserve(group_atom_positions.size());
-            eval.group_spans.reserve(group_atom_positions.size());
+            eval.child_indices.reserve(group_bin_positions.size());
+            eval.child_stats.reserve(group_bin_positions.size());
+            eval.group_spans.reserve(group_bin_positions.size());
             double lower_bound = 0.0;
             double upper_bound = 0.0;
-            for (const auto &group_positions : group_atom_positions) {
+            for (const auto &group_positions : group_bin_positions) {
                 std::vector<int> subset_sorted;
                 gather_group_members_sorted(
                     prepared.bins,
@@ -1007,20 +1007,20 @@
                 upper_bound += child_stats.leaf_objective;
                 eval.child_indices.push_back(std::move(subset_sorted));
                 eval.child_stats.push_back(std::move(child_stats));
-                eval.group_spans.push_back(atom_positions_to_spans(prepared.bins, group_positions));
+                eval.group_spans.push_back(bin_positions_to_spans(prepared.bins, group_positions));
                 if (lower_bound + kEpsUpdate >= incumbent_limit) {
                     eval.lower_bound = lower_bound;
                     eval.upper_bound = upper_bound;
                     eval.child_indices.clear();
                     eval.child_stats.clear();
                     eval.group_spans.clear();
-                    std::vector<int>().swap(eval.candidate.assignment);
+                    std::vector<int>().swap(eval.candidate.partition);
                     return false;
                 }
             }
             eval.lower_bound = lower_bound;
             eval.upper_bound = upper_bound;
-            std::vector<int>().swap(eval.candidate.assignment);
+            std::vector<int>().swap(eval.candidate.partition);
             return true;
         };
 

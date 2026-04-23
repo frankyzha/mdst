@@ -1,7 +1,7 @@
     #include "msplit_atomized_support.cpp"
 
     AtomizedCandidate refine_atomized_candidate_partition_locally(
-        const std::vector<AtomizedAtom> &atoms,
+        const std::vector<AtomizedBin> &atoms,
         const AtomizedCandidate &seed,
         double mu_node,
         const std::vector<std::pair<int, int>> *active_windows = nullptr,
@@ -19,9 +19,9 @@
 
         AtomizedRefinementSummary local_summary;
 
-        const int atom_count = (int)atoms.size();
+        const int bin_count = (int)atoms.size();
         const int groups = seed.groups;
-        if (atom_count <= 1 || groups <= 1) {
+        if (bin_count <= 1 || groups <= 1) {
             return seed;
         }
         const bool hard_loss_mode = (mode == AtomizedObjectiveMode::kHardLoss);
@@ -253,24 +253,24 @@
         };
 
         if (!binary_mode_) {
-            std::vector<int> assign = seed.assignment;
+            std::vector<int> assign = seed.partition;
             std::vector<int> branch_rows((size_t)groups, 0);
             std::vector<double> branch_class_weight(
                 static_cast<size_t>(groups) * static_cast<size_t>(n_classes_), 0.0);
             std::vector<double> branch_teacher_class_weight(
                 static_cast<size_t>(groups) * static_cast<size_t>(n_classes_), 0.0);
-            for (int atom_pos = 0; atom_pos < atom_count; ++atom_pos) {
-                const int group_idx = assign[(size_t)atom_pos];
+            for (int bin_pos = 0; bin_pos < bin_count; ++bin_pos) {
+                const int group_idx = assign[(size_t)bin_pos];
                 if (group_idx < 0 || group_idx >= groups) {
                     return seed;
                 }
-                branch_rows[(size_t)group_idx] += atoms[(size_t)atom_pos].row_count;
+                branch_rows[(size_t)group_idx] += atoms[(size_t)bin_pos].row_count;
                 const size_t base = static_cast<size_t>(group_idx) * static_cast<size_t>(n_classes_);
                 for (int cls = 0; cls < n_classes_; ++cls) {
                     branch_class_weight[base + static_cast<size_t>(cls)] +=
-                        atoms[(size_t)atom_pos].class_weight[(size_t)cls];
+                        atoms[(size_t)bin_pos].class_weight[(size_t)cls];
                     branch_teacher_class_weight[base + static_cast<size_t>(cls)] +=
-                        atoms[(size_t)atom_pos].teacher_class_weight[(size_t)cls];
+                        atoms[(size_t)bin_pos].teacher_class_weight[(size_t)cls];
                 }
             }
 
@@ -284,8 +284,6 @@
                     split_leaf_loss_flat(branch_class_weight, n_classes_, group_base);
                 branch_hard_impurity[(size_t)group_idx] =
                     hard_label_impurity_flat(branch_class_weight, n_classes_, group_base);
-                branch_soft_impurity[(size_t)group_idx] =
-                    hard_label_impurity_flat(branch_teacher_class_weight, n_classes_, group_base);
             }
 
             while (true) {
@@ -294,12 +292,12 @@
 
                 RankedMove best_descent;
                 RankedMove best_bridge;
-                int component_start = 0;
-                while (component_start < atom_count) {
-                    const int source_group = assign[(size_t)component_start];
-                    int component_end = component_start + 1;
-                    while (component_end < atom_count && assign[(size_t)component_end] == source_group) {
-                        ++component_end;
+                int interval_start = 0;
+                while (interval_start < bin_count) {
+                    const int source_group = assign[(size_t)interval_start];
+                    int interval_end = interval_start + 1;
+                    while (interval_end < bin_count && assign[(size_t)interval_end] == source_group) {
+                        ++interval_end;
                     }
                     if (!seen_source_groups[(size_t)source_group]) {
                         seen_source_groups[(size_t)source_group] = 1U;
@@ -307,12 +305,12 @@
                     }
                     bump_histogram(
                         local_summary.source_component_atom_size_histogram,
-                        component_end - component_start);
-                    int component_rows_total = 0;
-                    for (int pos = component_start; pos < component_end; ++pos) {
-                        component_rows_total += atoms[(size_t)pos].row_count;
+                        interval_end - interval_start);
+                    int interval_rows_total = 0;
+                    for (int pos = interval_start; pos < interval_end; ++pos) {
+                        interval_rows_total += atoms[(size_t)pos].row_count;
                     }
-                    bump_histogram(local_summary.source_component_row_size_histogram, component_rows_total);
+                    bump_histogram(local_summary.source_component_row_size_histogram, interval_rows_total);
 
                     for (int target_group = 0; target_group < groups; ++target_group) {
                         if (target_group == source_group) {
@@ -326,7 +324,7 @@
                         const double target_hard_before = branch_hard_impurity[(size_t)target_group];
                         const double source_soft_before = branch_soft_impurity[(size_t)source_group];
                         const double target_soft_before = branch_soft_impurity[(size_t)target_group];
-                        auto scan_component_overlap = [&](int lo, int hi) {
+                        auto scan_interval_overlap = [&](int lo, int hi) {
                             if (lo > hi) {
                                 return;
                             }
@@ -336,7 +334,7 @@
                                 std::vector<double> move_teacher_class_weight((size_t)n_classes_, 0.0);
                                 for (int end = start; end <= hi; ++end) {
                                     ++local_summary.candidate_total;
-                                    const AtomizedAtom &atom = atoms[(size_t)end];
+                                    const AtomizedBin &atom = atoms[(size_t)end];
                                     move_rows += atom.row_count;
                                     for (int cls = 0; cls < n_classes_; ++cls) {
                                         move_class_weight[(size_t)cls] += atom.class_weight[(size_t)cls];
@@ -382,26 +380,14 @@
                                         target_base,
                                         move_class_weight,
                                         true);
-                                    const double source_soft_after = hard_label_impurity_flat_delta(
-                                        branch_teacher_class_weight,
-                                        n_classes_,
-                                        source_base,
-                                        move_teacher_class_weight,
-                                        false);
-                                    const double target_soft_after = hard_label_impurity_flat_delta(
-                                        branch_teacher_class_weight,
-                                        n_classes_,
-                                        target_base,
-                                        move_teacher_class_weight,
-                                        true);
+                                    const double source_soft_after = 0.0;
+                                    const double target_soft_after = 0.0;
                                     const double primary_before = hard_loss_mode
                                         ? (source_loss_before + target_loss_before)
-                                        : (source_hard_before + target_hard_before +
-                                           source_soft_before + target_soft_before);
+                                        : (source_hard_before + target_hard_before);
                                     const double primary_after = hard_loss_mode
                                         ? (source_loss_after + target_loss_after)
-                                        : (source_hard_after + target_hard_after +
-                                           source_soft_after + target_soft_after);
+                                        : (source_hard_after + target_hard_after);
                                     const double guide_before = hard_loss_mode
                                         ? (source_hard_before + target_hard_before)
                                         : (source_loss_before + target_loss_before);
@@ -411,13 +397,13 @@
                                     const double delta_primary = primary_before - primary_after;
                                     const double delta_guide = guide_before - guide_after;
                                     const int source_delta_components =
-                                        (start == component_start && end == component_end - 1)
+                                        (start == interval_start && end == interval_end - 1)
                                             ? -1
-                                            : ((start == component_start || end == component_end - 1) ? 0 : 1);
+                                            : ((start == interval_start || end == interval_end - 1) ? 0 : 1);
                                     const bool left_target =
                                         (start > 0 && assign[(size_t)(start - 1)] == target_group);
                                     const bool right_target =
-                                        (end + 1 < atom_count && assign[(size_t)(end + 1)] == target_group);
+                                        (end + 1 < bin_count && assign[(size_t)(end + 1)] == target_group);
                                     int target_delta_components = 0;
                                     if (!left_target && !right_target) {
                                         target_delta_components = 1;
@@ -440,39 +426,39 @@
                                     move.target_loss_after = target_loss_after;
                                     move.source_hard_impurity_after = source_hard_after;
                                     move.target_hard_impurity_after = target_hard_after;
-                                    move.source_soft_impurity_after = source_soft_after;
-                                move.target_soft_impurity_after = target_soft_after;
-                                move.delta_hard = delta_primary;
-                                move.delta_soft = delta_guide;
-                                move.delta_j = delta_primary - mu_node * (double)move.delta_components;
-                                consider_ranked_move(
-                                    std::move(move),
-                                    delta_primary,
-                                    delta_guide,
-                                    best_descent,
-                                    best_bridge);
+                                    move.source_soft_impurity_after = 0.0;
+                                    move.target_soft_impurity_after = 0.0;
+                                    move.delta_hard = delta_primary;
+                                    move.delta_soft = delta_guide;
+                                    move.delta_j = delta_primary - mu_node * (double)move.delta_components;
+                                    consider_ranked_move(
+                                        std::move(move),
+                                        delta_primary,
+                                        delta_guide,
+                                        best_descent,
+                                        best_bridge);
                                 }
                             }
                         };
 
                         if (active_windows == nullptr || active_windows->empty()) {
-                            scan_component_overlap(component_start, component_end - 1);
+                            scan_interval_overlap(interval_start, interval_end - 1);
                             saw_overlap_segment = true;
                             ++local_summary.refine_overlap_segments;
                         } else {
                             for (const auto &window : *active_windows) {
-                                const int overlap_start = std::max(component_start, window.first);
-                                const int overlap_end = std::min(component_end - 1, window.second);
+                                const int overlap_start = std::max(interval_start, window.first);
+                                const int overlap_end = std::min(interval_end - 1, window.second);
                                 if (overlap_start <= overlap_end) {
                                     saw_overlap_segment = true;
                                     ++local_summary.refine_overlap_segments;
-                                    scan_component_overlap(overlap_start, overlap_end);
+                                    scan_interval_overlap(overlap_start, overlap_end);
                                 }
                             }
                         }
                     }
 
-                component_start = component_end;
+                interval_start = interval_end;
             }
 
             if (saw_overlap_segment) {
@@ -494,8 +480,8 @@
                 best_move_ptr = &chosen_ranked->move;
                 const AtomizedRefinementMove &best_move = *best_move_ptr;
 
-                for (int atom_pos = best_move.start; atom_pos <= best_move.end; ++atom_pos) {
-                    assign[(size_t)atom_pos] = best_move.target_group;
+                for (int bin_pos = best_move.start; bin_pos <= best_move.end; ++bin_pos) {
+                    assign[(size_t)bin_pos] = best_move.target_group;
                 }
 
                 branch_rows[(size_t)best_move.source_group] -= best_move.row_count;
@@ -538,12 +524,12 @@
                 std::vector<unsigned char> seen_source_groups((size_t)groups, 0);
 
                 RankedMove best_cleanup;
-                int component_start = 0;
-                while (component_start < atom_count) {
-                    const int source_group = assign[(size_t)component_start];
-                    int component_end = component_start + 1;
-                    while (component_end < atom_count && assign[(size_t)component_end] == source_group) {
-                        ++component_end;
+                int interval_start = 0;
+                while (interval_start < bin_count) {
+                    const int source_group = assign[(size_t)interval_start];
+                    int interval_end = interval_start + 1;
+                    while (interval_end < bin_count && assign[(size_t)interval_end] == source_group) {
+                        ++interval_end;
                     }
                     if (!seen_source_groups[(size_t)source_group]) {
                         seen_source_groups[(size_t)source_group] = 1U;
@@ -551,7 +537,7 @@
                     }
                     bump_histogram(
                         local_summary.source_component_atom_size_histogram,
-                        component_end - component_start);
+                        interval_end - interval_start);
 
                     for (int target_group = 0; target_group < groups; ++target_group) {
                         if (target_group == source_group) {
@@ -565,7 +551,7 @@
                         const double target_hard_before = branch_hard_impurity[(size_t)target_group];
                         const double source_soft_before = branch_soft_impurity[(size_t)source_group];
                         const double target_soft_before = branch_soft_impurity[(size_t)target_group];
-                        auto scan_component_overlap = [&](int lo, int hi) {
+                        auto scan_interval_overlap = [&](int lo, int hi) {
                             if (lo > hi) {
                                 return;
                             }
@@ -575,7 +561,7 @@
                                 std::vector<double> move_teacher_class_weight((size_t)n_classes_, 0.0);
                                 for (int end = start; end <= hi; ++end) {
                                     ++local_summary.candidate_total;
-                                    const AtomizedAtom &atom = atoms[(size_t)end];
+                                    const AtomizedBin &atom = atoms[(size_t)end];
                                     move_rows += atom.row_count;
                                     for (int cls = 0; cls < n_classes_; ++cls) {
                                         move_class_weight[(size_t)cls] += atom.class_weight[(size_t)cls];
@@ -621,40 +607,26 @@
                                         target_base,
                                         move_class_weight,
                                         true);
-                                    const double source_soft_after = hard_label_impurity_flat_delta(
-                                        branch_teacher_class_weight,
-                                        n_classes_,
-                                        source_base,
-                                        move_teacher_class_weight,
-                                        false);
-                                    const double target_soft_after = hard_label_impurity_flat_delta(
-                                        branch_teacher_class_weight,
-                                        n_classes_,
-                                        target_base,
-                                        move_teacher_class_weight,
-                                        true);
+                                    const double source_soft_after = 0.0;
+                                    const double target_soft_after = 0.0;
                                     const double primary_gain = hard_loss_mode
                                         ? ((source_loss_before + target_loss_before) -
                                            (source_loss_after + target_loss_after))
-                                        : ((source_hard_before + target_hard_before +
-                                            source_soft_before + target_soft_before) -
-                                           (source_hard_after + target_hard_after +
-                                            source_soft_after + target_soft_after));
+                                        : ((source_hard_before + target_hard_before) -
+                                           (source_hard_after + target_hard_after));
                                     const double guide_gain = hard_loss_mode
-                                        ? ((source_hard_before + target_hard_before +
-                                            source_soft_before + target_soft_before) -
-                                           (source_hard_after + target_hard_after +
-                                            source_soft_after + target_soft_after))
+                                        ? ((source_hard_before + target_hard_before) -
+                                           (source_hard_after + target_hard_after))
                                         : ((source_loss_before + target_loss_before) -
                                            (source_loss_after + target_loss_after));
                                     const int source_delta_components =
-                                        (start == component_start && end == component_end - 1)
+                                        (start == interval_start && end == interval_end - 1)
                                             ? -1
-                                            : ((start == component_start || end == component_end - 1) ? 0 : 1);
+                                            : ((start == interval_start || end == interval_end - 1) ? 0 : 1);
                                     const bool left_target =
                                         (start > 0 && assign[(size_t)(start - 1)] == target_group);
                                     const bool right_target =
-                                        (end + 1 < atom_count && assign[(size_t)(end + 1)] == target_group);
+                                        (end + 1 < bin_count && assign[(size_t)(end + 1)] == target_group);
                                     int target_delta_components = 0;
                                     if (!left_target && !right_target) {
                                         target_delta_components = 1;
@@ -677,8 +649,8 @@
                                     move.target_loss_after = target_loss_after;
                                     move.source_hard_impurity_after = source_hard_after;
                                     move.target_hard_impurity_after = target_hard_after;
-                                    move.source_soft_impurity_after = source_soft_after;
-                                    move.target_soft_impurity_after = target_soft_after;
+                                    move.source_soft_impurity_after = 0.0;
+                                    move.target_soft_impurity_after = 0.0;
                                     move.delta_hard = primary_gain;
                                     move.delta_soft = guide_gain;
                                     move.delta_j = primary_gain - mu_node * (double)move.delta_components;
@@ -707,19 +679,19 @@
                         };
 
                         if (active_windows == nullptr || active_windows->empty()) {
-                            scan_component_overlap(component_start, component_end - 1);
+                            scan_interval_overlap(interval_start, interval_end - 1);
                         } else {
                             for (const auto &window : *active_windows) {
-                                const int overlap_start = std::max(component_start, window.first);
-                                const int overlap_end = std::min(component_end - 1, window.second);
+                                const int overlap_start = std::max(interval_start, window.first);
+                                const int overlap_end = std::min(interval_end - 1, window.second);
                                 if (overlap_start <= overlap_end) {
-                                    scan_component_overlap(overlap_start, overlap_end);
+                                    scan_interval_overlap(overlap_start, overlap_end);
                                 }
                             }
                         }
                     }
 
-                    component_start = component_end;
+                    interval_start = interval_end;
                 }
 
                 if (!best_cleanup.valid) {
@@ -727,8 +699,8 @@
                 }
 
                 const AtomizedRefinementMove &best_cleanup_move = best_cleanup.move;
-                for (int atom_pos = best_cleanup_move.start; atom_pos <= best_cleanup_move.end; ++atom_pos) {
-                    assign[(size_t)atom_pos] = best_cleanup_move.target_group;
+                for (int bin_pos = best_cleanup_move.start; bin_pos <= best_cleanup_move.end; ++bin_pos) {
+                    assign[(size_t)bin_pos] = best_cleanup_move.target_group;
                 }
 
                 branch_rows[(size_t)best_cleanup_move.source_group] -= best_cleanup_move.row_count;
@@ -769,7 +741,7 @@
                 return seed;
             }
 
-            AtomizedCandidate refined = candidate_from_assignment(
+            AtomizedCandidate refined = candidate_from_partition(
                 seed.feature,
                 atoms,
                 assign,
@@ -788,18 +760,18 @@
             return local_summary.improved ? refined : seed;
         }
 
-        std::vector<int> assign = seed.assignment;
+        std::vector<int> assign = seed.partition;
         std::vector<int> branch_rows((size_t)groups, 0);
         std::vector<double> branch_pos((size_t)groups, 0.0);
         std::vector<double> branch_neg((size_t)groups, 0.0);
         std::vector<double> branch_teacher_pos((size_t)groups, 0.0);
         std::vector<double> branch_teacher_neg((size_t)groups, 0.0);
-        for (int atom_pos = 0; atom_pos < atom_count; ++atom_pos) {
-            const int group_idx = assign[(size_t)atom_pos];
+        for (int bin_pos = 0; bin_pos < bin_count; ++bin_pos) {
+            const int group_idx = assign[(size_t)bin_pos];
             if (group_idx < 0 || group_idx >= groups) {
                 return seed;
             }
-            const AtomizedAtom &atom = atoms[(size_t)atom_pos];
+            const AtomizedBin &atom = atoms[(size_t)bin_pos];
             branch_rows[(size_t)group_idx] += atom.row_count;
             branch_pos[(size_t)group_idx] += atom.pos_weight;
             branch_neg[(size_t)group_idx] += atom.neg_weight;
@@ -816,9 +788,6 @@
             branch_hard_impurity[(size_t)group_idx] = hard_label_impurity(
                 branch_pos[(size_t)group_idx],
                 branch_neg[(size_t)group_idx]);
-            branch_soft_impurity[(size_t)group_idx] = hard_label_impurity(
-                branch_teacher_pos[(size_t)group_idx],
-                branch_teacher_neg[(size_t)group_idx]);
         }
         while (true) {
             check_timeout();
@@ -831,26 +800,20 @@
                     branch_primary[(size_t)group_idx] = split_leaf_loss(
                         branch_pos[(size_t)group_idx],
                         branch_neg[(size_t)group_idx]);
-                    branch_secondary[(size_t)group_idx] = hard_label_impurity(
-                        branch_pos[(size_t)group_idx],
-                        branch_neg[(size_t)group_idx]);
+                    branch_secondary[(size_t)group_idx] = branch_hard_impurity[(size_t)group_idx];
                 } else {
-                    branch_primary[(size_t)group_idx] = hard_label_impurity(
-                        branch_pos[(size_t)group_idx],
-                        branch_neg[(size_t)group_idx]);
-                    branch_secondary[(size_t)group_idx] = hard_label_impurity(
-                        branch_teacher_pos[(size_t)group_idx],
-                        branch_teacher_neg[(size_t)group_idx]);
+                    branch_primary[(size_t)group_idx] = branch_hard_impurity[(size_t)group_idx];
+                    branch_secondary[(size_t)group_idx] = branch_loss[(size_t)group_idx];
                 }
             }
 
             AtomizedRefinementMove best_move;
-            int component_start = 0;
-            while (component_start < atom_count) {
-                const int source_group = assign[(size_t)component_start];
-                int component_end = component_start + 1;
-                while (component_end < atom_count && assign[(size_t)component_end] == source_group) {
-                    ++component_end;
+            int interval_start = 0;
+            while (interval_start < bin_count) {
+                const int source_group = assign[(size_t)interval_start];
+                int interval_end = interval_start + 1;
+                while (interval_end < bin_count && assign[(size_t)interval_end] == source_group) {
+                    ++interval_end;
                 }
                 if (!seen_source_groups[(size_t)source_group]) {
                     seen_source_groups[(size_t)source_group] = 1U;
@@ -858,12 +821,12 @@
                 }
                 bump_histogram(
                     local_summary.source_component_atom_size_histogram,
-                    component_end - component_start);
-                int component_rows_total = 0;
-                for (int pos = component_start; pos < component_end; ++pos) {
-                    component_rows_total += atoms[(size_t)pos].row_count;
+                    interval_end - interval_start);
+                int interval_rows_total = 0;
+                for (int pos = interval_start; pos < interval_end; ++pos) {
+                    interval_rows_total += atoms[(size_t)pos].row_count;
                 }
-                bump_histogram(local_summary.source_component_row_size_histogram, component_rows_total);
+                bump_histogram(local_summary.source_component_row_size_histogram, interval_rows_total);
 
                 for (int target_group = 0; target_group < groups; ++target_group) {
                     if (target_group == source_group) {
@@ -883,7 +846,7 @@
                     const double target_primary_before = branch_primary[(size_t)target_group];
                     const double source_secondary_before = branch_secondary[(size_t)source_group];
                     const double target_secondary_before = branch_secondary[(size_t)target_group];
-                    auto scan_component_overlap = [&](int lo, int hi) {
+                    auto scan_interval_overlap = [&](int lo, int hi) {
                         if (lo > hi) {
                             return;
                         }
@@ -895,7 +858,7 @@
                                 double move_teacher_neg = 0.0;
                                 for (int end = start; end <= hi; ++end) {
                                     ++local_summary.candidate_total;
-                                    const AtomizedAtom &atom = atoms[(size_t)end];
+                                    const AtomizedBin &atom = atoms[(size_t)end];
                                     move_rows += atom.row_count;
                                     move_pos += atom.pos_weight;
                                     move_neg += atom.neg_weight;
@@ -937,12 +900,12 @@
                                     target_primary_after = hard_label_impurity(
                                         target_pos_total + move_pos,
                                         target_neg_total + move_neg);
-                                    source_secondary_after = hard_label_impurity(
-                                        source_teacher_pos_total - move_teacher_pos,
-                                        source_teacher_neg_total - move_teacher_neg);
-                                    target_secondary_after = hard_label_impurity(
-                                        target_teacher_pos_total + move_teacher_pos,
-                                        target_teacher_neg_total + move_teacher_neg);
+                                    source_secondary_after = split_leaf_loss(
+                                        source_pos_total - move_pos,
+                                        source_neg_total - move_neg);
+                                    target_secondary_after = split_leaf_loss(
+                                        target_pos_total + move_pos,
+                                        target_neg_total + move_neg);
                                 }
                                 const double delta_primary =
                                     (source_primary_before + target_primary_before) -
@@ -951,11 +914,11 @@
                                     (source_secondary_before + target_secondary_before) -
                                     (source_secondary_after + target_secondary_after);
                                 const int source_delta_components =
-                                    (start == component_start && end == component_end - 1)
+                                    (start == interval_start && end == interval_end - 1)
                                         ? -1
-                                        : ((start == component_start || end == component_end - 1) ? 0 : 1);
+                                        : ((start == interval_start || end == interval_end - 1) ? 0 : 1);
                                 const bool left_target = (start > 0 && assign[(size_t)(start - 1)] == target_group);
-                                const bool right_target = (end + 1 < atom_count && assign[(size_t)(end + 1)] == target_group);
+                                const bool right_target = (end + 1 < bin_count && assign[(size_t)(end + 1)] == target_group);
                                 int target_delta_components = 0;
                                 if (!left_target && !right_target) {
                                     target_delta_components = 1;
@@ -979,47 +942,47 @@
                                 move.source_loss_after = hard_loss_mode ? source_primary_after : source_secondary_after;
                                 move.target_loss_after = hard_loss_mode ? target_primary_after : target_secondary_after;
                                 move.source_hard_impurity_after = hard_loss_mode ? source_secondary_after : source_primary_after;
-                                    move.target_hard_impurity_after = hard_loss_mode ? target_secondary_after : target_primary_after;
-                                    move.source_soft_impurity_after = 0.0;
-                                    move.target_soft_impurity_after = 0.0;
-                                    move.delta_hard = delta_primary;
-                                    move.delta_soft = delta_secondary;
-                                    move.delta_j = delta_primary - mu_node * (double)move.delta_components;
-                                    ++local_summary.candidate_legal;
-                                    if (!atomized_move_is_improving(move)) {
-                                        ++local_summary.candidate_score_rejected;
-                                        continue;
-                                    }
-                                    ++local_summary.candidate_descent_eligible;
-                                    if (!best_move.valid || atomized_move_better(move, best_move)) {
-                                        best_move = std::move(move);
-                                    }
+                                move.target_hard_impurity_after = hard_loss_mode ? target_secondary_after : target_primary_after;
+                                move.source_soft_impurity_after = 0.0;
+                                move.target_soft_impurity_after = 0.0;
+                                move.delta_hard = delta_primary;
+                                move.delta_soft = delta_secondary;
+                                move.delta_j = delta_primary - mu_node * (double)move.delta_components;
+                                ++local_summary.candidate_legal;
+                                if (!atomized_move_is_improving(move)) {
+                                    ++local_summary.candidate_score_rejected;
+                                    continue;
+                                }
+                                ++local_summary.candidate_descent_eligible;
+                                if (!best_move.valid || atomized_move_better(move, best_move)) {
+                                    best_move = std::move(move);
+                                }
                                 }
                             }
                         };
 
                     if (active_windows == nullptr || active_windows->empty()) {
-                        scan_component_overlap(component_start, component_end - 1);
+                        scan_interval_overlap(interval_start, interval_end - 1);
                     } else {
                         for (const auto &window : *active_windows) {
-                            const int overlap_start = std::max(component_start, window.first);
-                            const int overlap_end = std::min(component_end - 1, window.second);
+                            const int overlap_start = std::max(interval_start, window.first);
+                            const int overlap_end = std::min(interval_end - 1, window.second);
                             if (overlap_start <= overlap_end) {
-                                scan_component_overlap(overlap_start, overlap_end);
+                                scan_interval_overlap(overlap_start, overlap_end);
                             }
                         }
                     }
                 }
 
-                component_start = component_end;
+                interval_start = interval_end;
             }
 
             if (!best_move.valid) {
                 break;
             }
 
-            for (int atom_pos = best_move.start; atom_pos <= best_move.end; ++atom_pos) {
-                assign[(size_t)atom_pos] = best_move.target_group;
+            for (int bin_pos = best_move.start; bin_pos <= best_move.end; ++bin_pos) {
+                assign[(size_t)bin_pos] = best_move.target_group;
             }
 
             branch_rows[(size_t)best_move.source_group] -= best_move.row_count;
@@ -1054,7 +1017,7 @@
             return seed;
         }
 
-        AtomizedCandidate refined = candidate_from_assignment(
+        AtomizedCandidate refined = candidate_from_partition(
             seed.feature,
             atoms,
             assign,
@@ -1073,7 +1036,7 @@
     }
 
     AtomizedCandidate solve_atomized_geometry_family(
-        const std::vector<AtomizedAtom> &atoms,
+        const std::vector<AtomizedBin> &atoms,
         const AtomizedPrefixes &prefix,
         int feature,
         int groups,
@@ -1116,7 +1079,6 @@
                         cand.hard_loss += split_leaf_loss(seg_pos, seg_neg);
                         cand.soft_loss += split_leaf_loss(seg_teacher_pos, seg_teacher_neg);
                         cand.hard_impurity += hard_label_impurity(seg_pos, seg_neg);
-                        cand.soft_impurity += hard_label_impurity(seg_teacher_pos, seg_teacher_neg);
                     } else {
                         cand.hard_loss += split_leaf_loss_prefix_segment(
                             prefix.class_weight_prefix,
@@ -1130,11 +1092,6 @@
                             t);
                         cand.hard_impurity += hard_label_impurity_prefix_segment(
                             prefix.class_weight_prefix,
-                            n_classes_,
-                            p,
-                            t);
-                        cand.soft_impurity += hard_label_impurity_prefix_segment(
-                            prefix.teacher_class_weight_prefix,
                             n_classes_,
                             p,
                             t);
@@ -1162,7 +1119,7 @@
             return out;
         }
 
-        std::vector<int> assignment((size_t)m, -1);
+        std::vector<int> partition((size_t)m, -1);
         int t = m;
         int g = groups;
         int group_idx = groups - 1;
@@ -1172,7 +1129,7 @@
                 return AtomizedCandidate{};
             }
             for (int pos = p; pos < t; ++pos) {
-                assignment[(size_t)pos] = group_idx;
+                partition[(size_t)pos] = group_idx;
             }
             t = p;
             --g;
@@ -1182,13 +1139,13 @@
         out.feasible = true;
         out.score = dp[at(groups, m)];
         out.groups = groups;
-        out.assignment = std::move(assignment);
+        out.partition = std::move(partition);
         out.hard_loss_mode = (mode == AtomizedObjectiveMode::kHardLoss);
         return out;
     }
 
     AtomizedCandidatePair solve_atomized_geometry_family_pair(
-        const std::vector<AtomizedAtom> &atoms,
+        const std::vector<AtomizedBin> &atoms,
         const AtomizedPrefixes &prefix,
         int feature,
         int groups
@@ -1257,7 +1214,6 @@
                         seg_hard_loss = split_leaf_loss(seg_pos, seg_neg);
                         seg_soft_loss = split_leaf_loss(seg_teacher_pos, seg_teacher_neg);
                         seg_hard_impurity = hard_label_impurity(seg_pos, seg_neg);
-                        seg_soft_impurity = hard_label_impurity(seg_teacher_pos, seg_teacher_neg);
                     } else {
                         seg_hard_loss = split_leaf_loss_prefix_segment(
                             prefix.class_weight_prefix,
@@ -1271,11 +1227,6 @@
                             t);
                         seg_hard_impurity = hard_label_impurity_prefix_segment(
                             prefix.class_weight_prefix,
-                            n_classes_,
-                            p,
-                            t);
-                        seg_soft_impurity = hard_label_impurity_prefix_segment(
-                            prefix.teacher_class_weight_prefix,
                             n_classes_,
                             p,
                             t);
@@ -1293,7 +1244,6 @@
                         cand.hard_loss += seg_hard_loss;
                         cand.soft_loss += seg_soft_loss;
                         cand.hard_impurity += seg_hard_impurity;
-                        cand.soft_impurity += seg_soft_impurity;
                         cand.boundary_penalty += seg_boundary_penalty;
                         cand.components += 1;
                         return cand;
@@ -1340,7 +1290,7 @@
             if (!std::isfinite(atomized_primary_objective(dp[at(groups, m)], mode))) {
                 return candidate;
             }
-            std::vector<int> assignment((size_t)m, -1);
+            std::vector<int> partition((size_t)m, -1);
             int t = m;
             int g = groups;
             int group_idx = groups - 1;
@@ -1350,7 +1300,7 @@
                     return AtomizedCandidate{};
                 }
                 for (int pos = p; pos < t; ++pos) {
-                    assignment[(size_t)pos] = group_idx;
+                    partition[(size_t)pos] = group_idx;
                 }
                 t = p;
                 --g;
@@ -1359,7 +1309,7 @@
             candidate.feasible = true;
             candidate.score = dp[at(groups, m)];
             candidate.groups = groups;
-            candidate.assignment = std::move(assignment);
+            candidate.partition = std::move(partition);
             candidate.feature = feature;
             candidate.hard_loss_mode = (mode == AtomizedObjectiveMode::kHardLoss);
             return candidate;
@@ -1452,8 +1402,8 @@
             coarse_seed.feature = feature;
             if (coarse_seed.feasible) {
                 coarse.geometry_seed_candidate = coarse_seed;
-                coarse.initial_block_assignment = coarse_seed.assignment;
-                coarse.refined_block_assignment = coarse_seed.assignment;
+                coarse.initial_block_partition = coarse_seed.partition;
+                coarse.refined_block_partition = coarse_seed.partition;
                 coarse.candidate = coarse_seed;
             }
             return coarse;
@@ -1484,8 +1434,8 @@
             return AtomizedCoarseCandidate{};
         }
 
-        coarse.initial_block_assignment = block_seed.assignment;
-        coarse.refined_block_assignment = block_seed.assignment;
+        coarse.initial_block_partition = block_seed.partition;
+        coarse.refined_block_partition = block_seed.partition;
         coarse.block_candidate = coarse.geometry_seed_candidate;
         coarse.candidate = coarse.geometry_seed_candidate;
         return coarse;
@@ -1501,7 +1451,7 @@
         if (!build_ordered_bins(indices, feature, prepared.bins)) {
             return false;
         }
-        if (!build_atomized_atoms(prepared.bins, prepared.atoms)) {
+        if (!build_atomized_bins(prepared.bins, prepared.atoms)) {
             return false;
         }
         ++telemetry.atomized_features_prepared;
@@ -1527,19 +1477,19 @@
         prepared.atom_adjacency_bonus_total = 0.0;
         if (prepared.atoms.size() > 1U) {
             prepared.atom_adjacency_bonus.resize(prepared.atoms.size() - 1U, 0.0);
-            for (size_t atom_pos = 0; atom_pos + 1U < prepared.atoms.size(); ++atom_pos) {
+            for (size_t bin_pos = 0; bin_pos + 1U < prepared.atoms.size(); ++bin_pos) {
                 const double bonus = contiguous_boundary_bonus(
                     feature,
-                    prepared.atoms[atom_pos],
-                    prepared.atoms[atom_pos + 1U]);
-                prepared.atom_adjacency_bonus[atom_pos] = bonus;
+                    prepared.atoms[bin_pos],
+                    prepared.atoms[bin_pos + 1U]);
+                prepared.atom_adjacency_bonus[bin_pos] = bonus;
                 prepared.atom_adjacency_bonus_total += bonus;
             }
         }
 
         prepared.has_block_compression = has_atomized_block_compression(prepared.atoms);
         if (prepared.has_block_compression) {
-            build_atomized_blocks_and_atoms(prepared.atoms, prepared.blocks, prepared.block_atoms);
+            build_atomized_blocks_and_bins(prepared.atoms, prepared.blocks, prepared.block_atoms);
             prepared.has_block_compression = prepared.block_atoms.size() < prepared.atoms.size();
         }
         bump_count_histogram(
@@ -1684,7 +1634,7 @@
         return selected;
     }
 
-    static std::vector<std::pair<int, int>> atom_positions_to_spans(
+    static std::vector<std::pair<int, int>> bin_positions_to_spans(
         const OrderedBins &bins,
         const std::vector<int> &group_positions
     ) {
@@ -1696,15 +1646,15 @@
         int span_hi = span_lo;
         int prev_pos = group_positions.front();
         for (size_t i = 1; i < group_positions.size(); ++i) {
-            const int atom_pos = group_positions[i];
-            if (atom_pos == prev_pos + 1) {
-                span_hi = bins.values[(size_t)atom_pos];
+            const int bin_pos = group_positions[i];
+            if (bin_pos == prev_pos + 1) {
+                span_hi = bins.values[(size_t)bin_pos];
             } else {
                 spans.push_back({span_lo, span_hi});
-                span_lo = bins.values[(size_t)atom_pos];
+                span_lo = bins.values[(size_t)bin_pos];
                 span_hi = span_lo;
             }
-            prev_pos = atom_pos;
+            prev_pos = bin_pos;
         }
         spans.push_back({span_lo, span_hi});
         return spans;
@@ -1950,8 +1900,8 @@
         bool found_recursive_winner = false;
         double best_one_step_objective = kInfinity;
         bool found_nonconstant_one_step = false;
-        std::vector<std::vector<int>> group_atom_positions;
-        std::vector<int> group_atom_counts;
+        std::vector<std::vector<int>> group_bin_positions;
+        std::vector<int> group_bin_counts;
         std::vector<std::vector<int>> subset_buffers;
         std::vector<std::vector<std::pair<int, int>>> group_spans;
         std::vector<std::shared_ptr<Node>> child_nodes;
@@ -1965,11 +1915,11 @@
                 }
                 const PreparedFeatureAtomized &prepared = prepared_by_feature[(size_t)ranked.feature];
                 if (prepared.valid) {
-                    if (!fill_groups_from_assignment(
-                        ranked.candidate.assignment,
+                    if (!fill_groups_from_partition(
+                        ranked.candidate.partition,
                         ranked.candidate.groups,
-                        group_atom_positions,
-                        group_atom_counts)) {
+                        group_bin_positions,
+                        group_bin_counts)) {
                         continue;
                     }
                     const OrderedBins &bins = prepared.bins;
@@ -1980,8 +1930,8 @@
                     child_nodes.reserve((size_t)ranked.candidate.groups);
                     bool build_ok = true;
                     bool has_prediction_flip = false;
-                    for (size_t group_idx = 0; group_idx < group_atom_positions.size(); ++group_idx) {
-                        const auto &group = group_atom_positions[group_idx];
+                    for (size_t group_idx = 0; group_idx < group_bin_positions.size(); ++group_idx) {
+                        const auto &group = group_bin_positions[group_idx];
                         std::vector<int> &subset_sorted = subset_buffers[group_idx];
                         gather_group_members_sorted(bins, group, subset_sorted);
                         if ((int)subset_sorted.size() < min_child_size_) {
@@ -2006,7 +1956,7 @@
                             }
                             child_nodes.push_back(child.tree);
                         }
-                        group_spans[group_idx] = atom_positions_to_spans(bins, group);
+                        group_spans[group_idx] = bin_positions_to_spans(bins, group);
                     }
                     if (build_ok) {
                         std::shared_ptr<Node> tree = build_internal_node_from_group_spans(
